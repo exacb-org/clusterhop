@@ -1,0 +1,91 @@
+# --------------------------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Jayesh Badwaik <j.badwaik@fz-juelich.de>
+# --------------------------------------------------------------------------------------------------
+
+[project]
+name = "clusterhop"
+dynamic = ["version"]
+description = 'A clusterhop Parser and Emitter'
+readme = "readme.md"
+license = "Apache-2.0"
+authors = [
+{ name = "Jayesh Badwaik", email = "j.badwaik@fz-juelich.de" },
+]
+dependencies = [
+  "semver",
+  "pexpect",
+  "jsonschema"
+]
+
+[project.urls]
+Source = "https://ambhora.codes/software/clusterhop"
+
+[project.scripts]
+clusterhop = "clusterhop.cli:main"
+
+# --------------------------------------------------------------------------------------------------
+# Hatch configuration
+# --------------------------------------------------------------------------------------------------
+[tool.hatch.version]
+path = "src/clusterhop/metadata.py"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clusterhop"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"share"="share"
+
+# --------------------------------------------------------------------------------------------------
+# PyTest configuration
+# --------------------------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "--cov --cov-report term-missing --cov-fail-under=10"
+
+[tool.black]
+line-length = 100
+
+[tool.hatch.envs.test]
+dependencies = [
+  "pytest>=6.3",
+  "pytest-cov"
+]
+
+
+[tool.hatch.envs.mypy]
+dependencies = [
+  "types-PyYAML",
+  "mypy",
+  "semver",
+  "pytest",
+]
+
+[tool.hatch.envs.doc]
+dependencies = [
+  "mkdocs-material",
+  "mkdocstrings[python]",
+  "mkdocs-awesome-nav",
+  "mkdocs-add-number-plugin",
+  "gitpython",
+  "pyyaml",
+  "pymdown-extensions",
+  "mkdocs-gen-files",
+  "mkdocs-awesome-pages-plugin",
+  "mkdocs-macros-plugin",
+  "mkdocs-pagetree-plugin",
+  "mkdocs-git-authors-plugin",
+  "mkdocs-git-revision-date-localized-plugin"
+]
+
+
+[tool.hatch.envs.format]
+dependencies = [
+  "black"
+]
+
+
