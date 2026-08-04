@@ -261,4 +261,47 @@ The final exit behavior should be clear:
 
 ## 8. Testing Plan
 
+The Pythonic version should be tested step by step after the design is approved.
+
+Initial tests should focus on small units first:
+
+- configuration validation
+- GitLab API request construction
+- pipeline status mapping
+- variable forwarding
+- log size handling
+- missing log handling
+- summary generation
+- cancellation state handling
+
+After unit-level tests, the full workflow should be tested with the existing GitHub-to-GitLab test repository.
+
+Integration tests should cover:
+
+- successful GitLab pipeline
+- failed GitLab pipeline
+- large GitLab job log
+- missing GitLab log
+- manual GitHub workflow cancellation
+- timeout while waiting for GitLab pipeline
+
+No PyPI publishing or final release should happen until the Pythonic version passes the same scenarios that the Bash/YAML prototype already passed.
+
 ## 9. Unresolved Decisions
+
+The following decisions still need confirmation before implementation or release:
+
+- Should the final package be published as `clusterhop` or under the existing `exacb` PyPI project?
+
+- What should the final CLI command be?
+  For example: `clusterhop github2lab`
+
+- Should the GitHub-to-GitLab bridge logic live in `src/clusterhop/github2lab/`?
+
+- Should configuration come from environment variables, CLI arguments, or both?
+
+- Should the GitLab project be configured by project ID, project path, or project URL?
+
+- What format should be used for custom GitLab pipeline variables?
+
+- Where is the boundary between this GitHub-to-GitLab bridge task and future broader ClusterHop/HPC functionality?
