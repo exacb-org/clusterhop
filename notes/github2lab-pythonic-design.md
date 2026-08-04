@@ -41,6 +41,20 @@ The final package and publishing identity is not decided here. The current repos
 
 ## 4. Existing Prototype Behavior
 
+The existing prototype is implemented using GitHub Actions YAML and Bash. It currently lives in the `exacb-org/github2lab-test` repository, primarily in `.github/workflows/github-to-gitlab.yml`, with the corresponding GitLab pipeline defined in `.gitlab-ci.yml`. This logic has not yet been implemented inside the `clusterhop` Python package.
+
+The prototype flow is:
+
+1. A commit is pushed to the GitHub repository.
+
+2. GitHub Actions starts the GitHub-to-GitLab workflow.
+
+3. The workflow derives a GitLab branch name from the GitHub commit SHA:
+
+   ```text
+   ci/<github-commit-sha>
+   ```
+
 ## 5. Inputs and Secrets
 
 ## 6. Proposed Python Architecture
