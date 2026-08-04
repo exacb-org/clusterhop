@@ -57,6 +57,42 @@ The prototype flow is:
 
 ## 5. Inputs and Secrets
 
+The Pythonic version will need the same information that the current GitHub Actions + Bash prototype already uses.
+
+### GitLab authentication
+
+The tool needs GitLab credentials to trigger pipelines, read pipeline status, fetch jobs and logs, and cancel pipelines. Authenticated Git operations may also require a GitLab credential, depending on how the Git remote is configured.
+
+The current prototype uses:
+
+- `GITLAB_TOKEN`
+- `GITLAB_TRIGGER_TOKEN`
+
+`GITLAB_TOKEN` is used for GitLab API operations such as reading pipeline status, fetching jobs and logs, and cancelling pipelines.
+
+`GITLAB_TRIGGER_TOKEN` is used to start a GitLab pipeline through the GitLab Trigger API.
+
+These values are secrets. They must be supplied securely through GitHub Actions secrets or another secure runtime environment. They must never be hardcoded in Python code, written to logs, included in summaries, or committed to the repository.
+
+### GitLab project information
+
+The tool needs to know which GitLab project should receive the pushed branch and pipeline trigger.
+
+The current prototype uses:
+
+- GitLab project ID
+- GitLab project path or URL
+- Authenticated GitLab remote URL
+
+The current test project is:
+
+```text
+Project ID: 8894
+Project path: exacb/fahmin-experiments/githubci/github2lab-test
+```
+
+These project values are configuration, not secrets. The Pythonic version should make them configurable rather than hardcoding the current test project.
+
 ## 6. Proposed Python Architecture
 
 ## 7. Error Handling and Cancellation
