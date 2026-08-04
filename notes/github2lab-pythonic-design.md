@@ -199,6 +199,66 @@ This command would run the complete GitHub-to-GitLab bridge flow. The command na
 
 ## 7. Error Handling and Cancellation
 
+The Pythonic version must handle errors and cancellation more carefully than the current Bash prototype.
+
+### Error handling
+
+The tool should fail clearly when required inputs are missing, such as:
+
+- GitLab token
+- GitLab trigger token
+- GitLab project ID or project path
+- GitHub commit SHA
+- GitLab remote URL
+
+The tool should also handle GitLab API problems, such as:
+
+- authentication failure
+- project not found
+- pipeline trigger failure
+- pipeline status request failure
+- job list request failure
+- job log request failure
+- timeout while waiting for pipeline result
+
+Errors should produce clear messages, but secrets must never be printed.
+
+### Cancellation handling
+
+The current Bash prototype already handles GitHub workflow cancellation by catching `SIGINT` and `SIGTERM`.
+
+The Pythonic version should keep this behavior.
+
+If the GitHub Actions workflow is manually cancelled while the Python command is running, the Python process should:
+
+1. catch the cancellation signal
+2. check whether a GitLab pipeline has already been started
+3. send a GitLab pipeline cancellation request if possible
+4. avoid sending duplicate cancellation requests
+5. exit with a non-success status
+
+Cancellation edge cases to consider:
+
+- cancellation before the GitLab pipeline is created
+- cancellation while triggering the GitLab pipeline
+- cancellation while waiting for the GitLab pipeline result
+- cancellation after the GitLab pipeline already finished
+- cancellation while fetching jobs or logs
+- receiving both `SIGINT` and `SIGTERM`
+
+The tool should keep enough runtime state to know whether there is an active GitLab pipeline that needs to be cancelled.
+
+### Final status behavior
+
+The final exit behavior should be clear:
+
+- GitLab pipeline `success` → Python command exits with code `0`
+- GitLab pipeline `failed` → Python command exits with non-zero code
+- GitLab pipeline `canceled` → Python command exits with non-zero code
+- timeout → Python command exits with non-zero code
+- API error → Python command exits with non-zero code
+- GitHub workflow cancellation → Python command tries to cancel GitLab pipeline and exits with non-zero code
+
 ## 8. Testing Plan
 
 ## 9. Unresolved Decisions
