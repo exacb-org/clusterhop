@@ -314,6 +314,10 @@ The Pythonic version should be implemented in small steps, not all at once. Each
    First understand the current command entry point: `src/clusterhop/cli/__init__.py`.
    We should not break the existing `clusterhop` command while adding the new GitHub-to-GitLab logic.
 
+   **Existing CLI behavior to preserve:** The current CLI supports `clusterhop run SOURCE_FILE DESTINATION_NAME`. It copies `SOURCE_FILE` to `/home/work/xlab/2601-025-runner/DESTINATION_NAME.sh`. Adding the new `github2lab` functionality must not break this existing command or its file-copy behavior.
+
+   The current CLI also prints `sys.argv`. Future secrets must not be passed through or printed by this unredacted argument output.
+
 2. Create the proposed `src/clusterhop/github2lab/` package structure.
    This will be the new place for the GitHub-to-GitLab bridge logic.
    The CLI should stay small and call this internal package.
