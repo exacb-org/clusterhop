@@ -314,10 +314,6 @@ The Pythonic version should be implemented in small steps, not all at once. Each
    First understand the current command entry point: `src/clusterhop/cli/__init__.py`.
    We should not break the existing `clusterhop` command while adding the new GitHub-to-GitLab logic.
 
-   **Existing CLI behavior to preserve:** The current CLI supports `clusterhop run SOURCE_FILE DESTINATION_NAME`. It copies `SOURCE_FILE` to `/home/work/xlab/2601-025-runner/DESTINATION_NAME.sh`. Adding the new `github2lab` functionality must not break this existing command or its file-copy behavior.
-
-   The current CLI also prints `sys.argv`. Future secrets must not be passed through or printed by this unredacted argument output.
-
 2. Create the proposed `src/clusterhop/github2lab/` package structure.
    This will be the new place for the GitHub-to-GitLab bridge logic.
    The CLI should stay small and call this internal package.
@@ -357,6 +353,66 @@ The Pythonic version should be implemented in small steps, not all at once. Each
 11. Review unresolved decisions before release.
     Before publishing, confirm the package name, final CLI command, configuration style, GitLab project input style, custom variable format, and release process.
     No PyPI publishing should happen before these decisions are confirmed.
+
+### Step 1 Notes
+
+The current CLI supports `clusterhop run SOURCE_FILE DESTINATION_NAME`. It copies `SOURCE_FILE` to `/home/work/xlab/2601-025-runner/DESTINATION_NAME.sh`. Adding the new `github2lab` functionality must not break this existing command or its file-copy behavior.
+
+The current CLI also prints `sys.argv`. Future secrets must not be passed through or printed by this unredacted argument output.
+
+### Step 3 Configuration Contract
+
+The future `config.py` should expose a configuration model that is independent of GitHub Actions. Environment variables will be the initial input source, while CLI arguments or other sources can populate the same model later without changing its validation rules.
+
+#### Required values
+
+| Configuration field | Proposed environment variable | Secret | Purpose |
+|---|---|---|---|
+| GitLab token | `GITLAB_TOKEN` | Yes | Authenticates the Git push and GitLab API operations. |
+| GitLab trigger token | `GITLAB_TRIGGER_TOKEN` | Yes | Triggers the GitLab pipeline. |
+| GitLab URL | `GITLAB_URL` | No | Base URL of the GitLab instance. |
+| GitLab project ID or project path | `GITLAB_PROJECT_ID` or `GITLAB_PROJECT_PATH` | No | Identifies the GitLab project. At least one must be provided. |
+| GitLab remote URL | `GITLAB_REMOTE_URL` | No | Token-free Git remote URL used to push the commit. |
+| GitHub commit SHA | `GITHUB_SHA` | No | Identifies the GitHub commit to transfer. |
+| GitHub repository | `GITHUB_REPOSITORY` | No | Identifies the source GitHub repository. |
+| GitHub run ID | `GITHUB_RUN_ID` | No | Identifies the source GitHub Actions run. |
+
+The behavior when both `GITLAB_PROJECT_ID` and `GITLAB_PROJECT_PATH` are provided must be defined before implementation. Configuration should not silently select one without a documented precedence rule.
+
+#### Optional values and defaults
+
+The following initial defaults come from the working Bash/YAML prototype. They preserve the prototype's current behavior, but they are not permanent hardcoded limits for the reusable Python implementation.
+
+| Configuration field | Proposed environment variable | Default |
+|---|---|---|
+| Poll interval | `CLUSTERHOP_POLL_INTERVAL_SECONDS` | `5` seconds |
+| Pipeline timeout | `CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS` | `150` seconds |
+| Log summary limit | `CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES` | `800000` bytes |
+| Extra pipeline variables | `CLUSTERHOP_GITLAB_VARIABLES` | Empty mapping (`{}`) |
+
+The Pythonic version should allow these defaults to be overridden later through environment variables, CLI arguments, or configuration. This flexibility is required because the Pythonic version is intended to be the reusable implementation, not a direct copy of the Bash/YAML prototype.
+
+The serialization format for `CLUSTERHOP_GITLAB_VARIABLES` remains an unresolved decision. The configuration model should ultimately represent extra variables as key-value pairs regardless of whether they come from an environment variable, CLI arguments, or another source.
+
+#### Secret safety rules
+
+- Tokens must never be printed.
+- Tokens must never appear in logs, GitHub summaries, representation output such as `repr()`, or validation errors.
+- A token-containing GitLab remote URL must not be permanently stored in configuration, written to disk, or exposed in process output.
+- Authentication material needed for a Git operation should be applied only for that operation and handled separately from the token-free `GITLAB_REMOTE_URL` value.
+
+#### Validation rules
+
+- Validate the complete configuration before any Git push or GitLab API call.
+- Fail clearly when a required value is missing or empty.
+- Require at least one of `GITLAB_PROJECT_ID` or `GITLAB_PROJECT_PATH`.
+- Require poll interval, pipeline timeout, and log summary limit values to be positive numbers.
+- Error messages should identify the missing or invalid field without including its value when the field is secret.
+- Configuration errors should stop execution before any external operation begins.
+
+#### Input-source independence
+
+Environment-variable loading should be separate from the configuration model and its validation. GitHub Actions can provide the proposed environment variables initially, while future CLI arguments or server-side configuration can construct the same model later. The core model should not import or depend on GitHub Actions-specific APIs.
 
 ## 11. Future Whole-Project Placeholders
 
