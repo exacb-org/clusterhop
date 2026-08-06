@@ -305,3 +305,64 @@ The following decisions still need confirmation before implementation or release
 - What format should be used for custom GitLab pipeline variables?
 
 - Where is the boundary between this GitHub-to-GitLab bridge task and future broader ClusterHop/HPC functionality?
+
+## 10. Implementation Plan
+
+The Pythonic version should be implemented in small steps, not all at once. Each step should be reviewed before moving to the next one.
+
+1. Review and preserve the existing `clusterhop` CLI behavior.
+   First understand the current command entry point: `src/clusterhop/cli/__init__.py`.
+   We should not break the existing `clusterhop` command while adding the new GitHub-to-GitLab logic.
+
+2. Create the proposed `src/clusterhop/github2lab/` package structure.
+   This will be the new place for the GitHub-to-GitLab bridge logic.
+   The CLI should stay small and call this internal package.
+
+3. Add configuration loading and validation.
+   The Python tool needs to read required inputs such as GitLab tokens, project information, GitHub metadata, timeout, and log limit.
+   Secrets must never be printed or hardcoded.
+
+4. Add GitLab API helper logic.
+   Replace the current Bash `curl` logic with Python functions.
+   These functions should trigger pipelines, check status, cancel pipelines, fetch jobs, and fetch logs.
+
+5. Add Git branch and push logic.
+   Move the current Git push behavior into Python.
+   This includes deriving the `ci/<commit-sha>` remote branch name and pushing the current commit to GitLab with `ci.skip`.
+
+6. Add the main runner flow.
+   This is the coordinator that runs the full process from start to end.
+   It should push the commit, trigger GitLab, wait for the result, collect jobs and logs, write the summary, and return the final status.
+
+7. Add log handling and GitHub Summary generation.
+   Move the completed Issue #4 behavior into Python.
+   Small logs should be shown in the summary, while large logs should be replaced with a clear message and GitLab job link.
+
+8. Add cancellation handling.
+   Move the completed Issue #6 behavior into Python.
+   If the GitHub workflow is cancelled, Python should catch `SIGINT` and `SIGTERM` and cancel the related GitLab pipeline.
+
+9. Add tests for each small part.
+   Tests should cover configuration, GitLab API logic, status mapping, variables, logs, summary generation, and cancellation state.
+   Tests should be added gradually alongside the implementation, not all at once at the end.
+
+10. Test the full Pythonic workflow using the existing GitHub-to-GitLab test repository.
+    The Python version should pass the same scenarios as the Bash/YAML prototype: success, failure, large logs, missing logs, cancellation, and timeout.
+    Only after this should it be considered complete.
+
+11. Review unresolved decisions before release.
+    Before publishing, confirm the package name, final CLI command, configuration style, GitLab project input style, custom variable format, and release process.
+    No PyPI publishing should happen before these decisions are confirmed.
+
+## 11. Future Whole-Project Placeholders
+
+These are outside the current Issue #5 scope, but may become future ClusterHop/exaCB tasks:
+
+- Server-based execution
+- Broader GitLab CI/CD to HPC integration
+- HPC job submission
+- HPC job monitoring
+- Benchmark execution
+- Result collection from HPC systems
+- Deeper exaCB integration
+- Production documentation and release workflow
