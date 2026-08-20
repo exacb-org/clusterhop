@@ -8,12 +8,10 @@ import json
 import shutil
 
 
-
-def main():
+def main() -> None:
     print(json.dumps({"arguments": sys.argv}))
 
     if sys.argv[1] == "run":
         print("Running the application...")
 
         shutil.copy(sys.argv[2], "/home/work/xlab/2601-025-runner/{}.sh".format(sys.argv[3]))
-
