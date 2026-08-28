@@ -11,12 +11,14 @@ import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_PIPELINE_TIMEOUT_SECONDS = 150.0
 DEFAULT_LOG_SUMMARY_LIMIT_BYTES = 800_000
+DEFAULT_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
 class ConfigurationError(ValueError):
@@ -39,6 +41,8 @@ class GitHub2LabConfig:
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     pipeline_timeout_seconds: float = DEFAULT_PIPELINE_TIMEOUT_SECONDS
     log_summary_limit_bytes: int = DEFAULT_LOG_SUMMARY_LIMIT_BYTES
+    cleanup_timeout_seconds: float = DEFAULT_CLEANUP_TIMEOUT_SECONDS
+    pipeline_state_file: Path | None = None
     extra_pipeline_variables: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -66,6 +70,7 @@ class GitHub2LabConfig:
         _validate_positive_float("poll_interval_seconds", self.poll_interval_seconds)
         _validate_positive_float("pipeline_timeout_seconds", self.pipeline_timeout_seconds)
         _validate_positive_integer("log_summary_limit_bytes", self.log_summary_limit_bytes)
+        _validate_positive_float("cleanup_timeout_seconds", self.cleanup_timeout_seconds)
         if self.pipeline_timeout_seconds < self.poll_interval_seconds:
             raise ConfigurationError(
                 "pipeline_timeout_seconds must be greater than or equal to "
@@ -125,6 +130,15 @@ def load_config_from_environment(
             source,
             "CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES",
             DEFAULT_LOG_SUMMARY_LIMIT_BYTES,
+        ),
+        cleanup_timeout_seconds=_float_environment_value(
+            source,
+            "CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS",
+            DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+        ),
+        pipeline_state_file=_path_environment_value(
+            source,
+            "CLUSTERHOP_PIPELINE_STATE_FILE",
         ),
     )
 
@@ -210,3 +224,12 @@ def _integer_environment_value(
         return int(value)
     except (TypeError, ValueError) as error:
         raise ConfigurationError(f"Environment variable {name} must be an integer.") from error
+
+
+def _path_environment_value(environ: Mapping[str, str], name: str) -> Path | None:
+    value = environ.get(name)
+    if value is None:
+        return None
+    if not value.strip():
+        raise ConfigurationError(f"Environment variable {name} must not be empty.")
+    return Path(value)

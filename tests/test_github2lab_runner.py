@@ -26,6 +26,7 @@ from clusterhop.github2lab.runner import (
     select_main_job,
 )
 from clusterhop.github2lab.summary import GitHubSummaryData, render_github_summary
+from clusterhop.github2lab.state import PipelineState, PipelineStateStorage
 
 GITHUB_COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567"
 BRANCH_NAME = f"ci/{GITHUB_COMMIT_SHA}"
@@ -166,6 +167,7 @@ class FakeGitLabClient:
         self.errors: dict[str, Exception] = {}
         self.calls: list[tuple[str, object]] = []
         self.cancel_pipeline_ids: list[int] = []
+        self.cancel_timeouts: list[float | None] = []
         self._last_pipeline = self.pipeline_updates[-1]
 
     def trigger_pipeline(self, ref: str) -> GitLabPipeline:
@@ -190,9 +192,15 @@ class FakeGitLabClient:
         self._before_return("get_trace")
         return self.trace
 
-    def cancel_pipeline(self, pipeline_id: int) -> GitLabPipeline:
+    def cancel_pipeline(
+        self,
+        pipeline_id: int,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> GitLabPipeline:
         self.calls.append(("cancel", pipeline_id))
         self.cancel_pipeline_ids.append(pipeline_id)
+        self.cancel_timeouts.append(timeout_seconds)
         self._before_return("cancel")
         return _pipeline("canceled")
 
@@ -237,6 +245,20 @@ class FakeSummaryWriter:
             raise self.error
 
 
+class RecordingStateStore:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.states: list[PipelineState] = []
+
+    def read(self) -> PipelineState | None:
+        return self.states[-1] if self.states else None
+
+    def write(self, state: PipelineState) -> None:
+        if self.error is not None:
+            raise self.error
+        self.states.append(state)
+
+
 def _runner(
     *,
     config: GitHub2LabConfig | None = None,
@@ -246,6 +268,7 @@ def _runner(
     writer: FakeSummaryWriter | None = None,
     renderer: Callable[[GitHubSummaryData], str] = render_github_summary,
     clock: FakeClock | None = None,
+    state_store: PipelineStateStorage | None = None,
 ) -> GitHub2LabRunner:
     fake_clock = clock or FakeClock()
     return GitHub2LabRunner(
@@ -255,6 +278,7 @@ def _runner(
         cancellation=cancellation or FakeCancellationController(),
         summary_writer=writer or FakeSummaryWriter(),
         summary_renderer=renderer,
+        state_store=state_store,
         clock=fake_clock.monotonic,
         sleeper=fake_clock.sleep,
     )
@@ -336,6 +360,9 @@ def test_pipeline_timeout_uses_injected_clock_and_still_collects_jobs() -> None:
     assert result.status == "timeout"
     assert result.exit_code == 1
     assert result.jobs == (job,)
+    assert result.pipeline == _pipeline("canceled")
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert gitlab.cancel_timeouts == [10.0]
     assert clock.sleeps == [2.0, 2.0, 1.0]
     assert [call for call in gitlab.calls if call[0] == "get_pipeline"] == [
         ("get_pipeline", 42),
@@ -343,6 +370,70 @@ def test_pipeline_timeout_uses_injected_clock_and_still_collects_jobs() -> None:
         ("get_pipeline", 42),
         ("get_pipeline", 42),
     ]
+
+
+def test_pipeline_state_is_active_before_first_poll() -> None:
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("success")])
+
+    def assert_active_state_exists() -> None:
+        assert state_store.states[-1].active is True
+        assert state_store.states[-1].pipeline_id == 42
+
+    gitlab.hooks["get_pipeline"] = assert_active_state_exists
+
+    _runner(gitlab=gitlab, state_store=state_store).run()
+
+    assert state_store.states[0].pipeline_status == "pending"
+
+
+@pytest.mark.parametrize("terminal_status", ["success", "failed", "canceled", "skipped"])
+def test_terminal_pipeline_marks_persisted_state_inactive(terminal_status: str) -> None:
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline(terminal_status)])
+
+    _runner(gitlab=gitlab, state_store=state_store).run()
+
+    assert state_store.states[-1].active is False
+    assert state_store.states[-1].pipeline_status == terminal_status
+
+
+def test_successful_timeout_cancellation_marks_state_inactive() -> None:
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+
+    result = _runner(gitlab=gitlab, state_store=state_store).run()
+
+    assert result.status == "timeout"
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert state_store.states[-1].active is False
+    assert state_store.states[-1].pipeline_status == "canceled"
+
+
+def test_failed_timeout_cancellation_leaves_state_active() -> None:
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+    gitlab.errors["cancel"] = RuntimeError(f"cancel failed {DUMMY_GITLAB_TOKEN}")
+
+    result = _runner(gitlab=gitlab, state_store=state_store).run()
+
+    assert result.status == "timeout"
+    assert result.error_message == "GitLab pipeline timed out, but cleanup failed."
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert state_store.states[-1].active is True
+    assert DUMMY_GITLAB_TOKEN not in result.error_message
+    assert DUMMY_GITLAB_TOKEN not in result.summary
+
+
+def test_signal_during_timeout_cleanup_does_not_duplicate_cancel_request() -> None:
+    cancellation = FakeCancellationController()
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+    gitlab.hooks["cancel"] = cancellation.request_cancellation
+
+    result = _runner(gitlab=gitlab, cancellation=cancellation).run()
+
+    assert result.status == "timeout"
+    assert gitlab.cancel_pipeline_ids == [42]
 
 
 def test_no_jobs_produces_clear_fallback_without_trace_request() -> None:

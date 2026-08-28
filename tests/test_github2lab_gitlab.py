@@ -315,6 +315,25 @@ def test_cancel_pipeline_posts_and_returns_pipeline() -> None:
     assert request.body == b""
 
 
+def test_cancel_pipeline_uses_bounded_timeout_override() -> None:
+    transport = FakeTransport(
+        [_json_response(_pipeline_payload(status="canceled"), status_code=200)]
+    )
+    client = GitLabClient(_config(), transport=transport, request_timeout_seconds=30.0)
+
+    client.cancel_pipeline(42, timeout_seconds=7.5)
+
+    assert transport.requests[0].timeout == 7.5
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_cancel_pipeline_rejects_invalid_timeout_override(timeout: object) -> None:
+    client = GitLabClient(_config(), transport=FakeTransport())
+
+    with pytest.raises(ValueError, match="greater than 0"):
+        client.cancel_pipeline(42, timeout_seconds=timeout)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("status_code", [401, 403, 404, 500])
 def test_http_errors_are_sanitized(status_code: int) -> None:
     sensitive_response = {

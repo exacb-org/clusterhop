@@ -249,10 +249,19 @@ class GitLabClient:
         )
         return response.body
 
-    def cancel_pipeline(self, pipeline_id: int) -> GitLabPipeline:
+    def cancel_pipeline(
+        self,
+        pipeline_id: int,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> GitLabPipeline:
         """Request cancellation of all jobs in a GitLab pipeline."""
 
         _validate_positive_identifier("pipeline_id", pipeline_id)
+        request_timeout_seconds = self._request_timeout_seconds
+        if timeout_seconds is not None:
+            _validate_positive_timeout("timeout_seconds", timeout_seconds)
+            request_timeout_seconds = float(timeout_seconds)
         operation = "cancel pipeline"
         response = self._request(
             operation=operation,
@@ -261,6 +270,7 @@ class GitLabClient:
             headers=self._private_token_headers(),
             body=b"",
             expected_status=200,
+            timeout_seconds=request_timeout_seconds,
         )
         return _parse_pipeline(_decode_json_object(response, operation), operation)
 
@@ -279,6 +289,7 @@ class GitLabClient:
         headers: Mapping[str, str],
         body: bytes | None,
         expected_status: int,
+        timeout_seconds: float | None = None,
     ) -> HttpResponse:
         try:
             response = self._transport.request(
@@ -286,7 +297,9 @@ class GitLabClient:
                 url=url,
                 headers=headers,
                 body=body,
-                timeout=self._request_timeout_seconds,
+                timeout=(
+                    self._request_timeout_seconds if timeout_seconds is None else timeout_seconds
+                ),
             )
         except HttpTransportError:
             raise GitLabApiError(operation, f"GitLab API operation {operation} failed.") from None
@@ -303,6 +316,16 @@ class GitLabClient:
 def _validate_positive_identifier(name: str, value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer.")
+
+
+def _validate_positive_timeout(name: str, value: object) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{name} must be greater than 0.")
 
 
 def _decode_json(response: HttpResponse, operation: str) -> object:

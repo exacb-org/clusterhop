@@ -24,6 +24,14 @@ from clusterhop.github2lab.git import GitLabBranchPusher
 from clusterhop.github2lab.gitlab import GitLabClient
 from clusterhop.github2lab.logs import ProcessedJobLog, process_job_log
 from clusterhop.github2lab.models import GitLabJob, GitLabPipeline
+from clusterhop.github2lab.state import (
+    FilePipelineStateStore,
+    NullPipelineStateStore,
+    PipelineState,
+    PipelineStateStorage,
+    is_terminal_pipeline_status,
+    pipeline_state_from_config,
+)
 from clusterhop.github2lab.summary import GitHubSummaryData, render_github_summary
 
 RunnerStatus = Literal["success", "failed", "canceled", "skipped", "timeout", "error"]
@@ -77,7 +85,12 @@ class GitLabOperations(Protocol):
     def get_job_trace(self, job_id: int) -> bytes:
         """Get the raw trace for a job."""
 
-    def cancel_pipeline(self, pipeline_id: int) -> GitLabPipeline:
+    def cancel_pipeline(
+        self,
+        pipeline_id: int,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> GitLabPipeline:
         """Cancel an active pipeline."""
 
 
@@ -162,7 +175,10 @@ class GitHub2LabResult:
 @dataclass
 class _RuntimeState:
     gitlab: GitLabOperations
+    config: GitHub2LabConfig
+    state_store: PipelineStateStorage
     pipeline: GitLabPipeline | None = None
+    persisted_state: PipelineState | None = None
     pipeline_is_terminal: bool = False
     cancellation_attempted: bool = False
     cancellation_cleanup_failed: bool = False
@@ -176,6 +192,20 @@ class _RuntimeState:
             return
         self.pipeline = pipeline
         self.pipeline_is_terminal = _normalize_terminal_status(pipeline.status) is not None
+        persistent_state = self.persisted_state
+        if persistent_state is None:
+            persistent_state = pipeline_state_from_config(
+                self.config,
+                pipeline,
+                active=not self.pipeline_is_terminal,
+            )
+        else:
+            persistent_state = persistent_state.with_pipeline(
+                pipeline,
+                active=not self.pipeline_is_terminal,
+            )
+        self.state_store.write(persistent_state)
+        self.persisted_state = persistent_state
 
     def cancel_active_pipeline(self) -> None:
         pipeline = self.pipeline
@@ -183,7 +213,10 @@ class _RuntimeState:
             return
         self.cancellation_attempted = True
         try:
-            canceled_pipeline = self.gitlab.cancel_pipeline(pipeline.id)
+            canceled_pipeline = self.gitlab.cancel_pipeline(
+                pipeline.id,
+                timeout_seconds=self.config.cleanup_timeout_seconds,
+            )
         except Exception:
             self.cancellation_cleanup_failed = True
             raise
@@ -208,6 +241,7 @@ class GitHub2LabRunner:
         cancellation: CancellationCoordinator | None = None,
         summary_writer: SummaryWriter | None = None,
         summary_renderer: SummaryRenderer = render_github_summary,
+        state_store: PipelineStateStorage | None = None,
         clock: Clock = time.monotonic,
         sleeper: Sleeper = time.sleep,
     ) -> None:
@@ -217,6 +251,9 @@ class GitHub2LabRunner:
         self._cancellation = cancellation if cancellation is not None else CancellationController()
         self._summary_writer = summary_writer if summary_writer is not None else NullSummaryWriter()
         self._summary_renderer = summary_renderer
+        self._state_store = (
+            state_store if state_store is not None else _state_store_from_config(config)
+        )
         self._clock = clock
         self._sleeper = sleeper
         self._has_run = False
@@ -233,13 +270,14 @@ class GitHub2LabRunner:
 
         expected_branch = f"ci/{self._config.github_commit_sha}"
         branch_name = expected_branch
-        state = _RuntimeState(self._gitlab)
+        state = _RuntimeState(self._gitlab, self._config, self._state_store)
         jobs: tuple[GitLabJob, ...] = ()
         selected_job: GitLabJob | None = None
         raw_trace: bytes | None = None
         status: RunnerStatus = "error"
         error_message: str | None = None
         operation = "starting the GitHub-to-GitLab bridge"
+        timed_out = False
 
         self._cancellation.register_cleanup(state.cancel_active_pipeline)
         with self._cancellation:
@@ -259,7 +297,15 @@ class GitHub2LabRunner:
 
                 operation = "waiting for the GitLab pipeline"
                 status = self._wait_for_pipeline(state)
-                self._checkpoint_cancellation(state)
+                timed_out = status == "timeout"
+                if timed_out:
+                    operation = "cancelling the timed-out GitLab pipeline"
+                    try:
+                        state.cancel_active_pipeline()
+                    except Exception:
+                        error_message = "GitLab pipeline timed out, but cleanup failed."
+                else:
+                    self._checkpoint_cancellation(state)
 
                 completed_pipeline = state.pipeline
                 if completed_pipeline is None:
@@ -278,12 +324,17 @@ class GitHub2LabRunner:
                         raw_trace = None
                     self._checkpoint_cancellation(state)
             except _CancellationRequested as cancellation:
-                status = "canceled"
-                error_message = (
-                    "Cancellation cleanup failed."
-                    if cancellation.cleanup_failed
-                    else "Cancellation was requested."
-                )
+                if timed_out:
+                    status = "timeout"
+                    if cancellation.cleanup_failed:
+                        error_message = "GitLab pipeline timed out, but cleanup failed."
+                else:
+                    status = "canceled"
+                    error_message = (
+                        "Cancellation cleanup failed."
+                        if cancellation.cleanup_failed
+                        else "Cancellation was requested."
+                    )
             except Exception:
                 status = "error"
                 error_message = f"github2lab failed while {operation}."
@@ -414,6 +465,15 @@ class GitHub2LabRunner:
         try:
             self._checkpoint_cancellation(state)
         except _CancellationRequested as cancellation:
+            if status == "timeout":
+                return (
+                    "timeout",
+                    (
+                        "GitLab pipeline timed out, but cleanup failed."
+                        if cancellation.cleanup_failed
+                        else error_message
+                    ),
+                )
             return (
                 "canceled",
                 (
@@ -481,5 +541,14 @@ def _summary_writer_from_environment(environ: Mapping[str, str]) -> SummaryWrite
     return FileSummaryWriter(summary_path)
 
 
+def _state_store_from_config(config: GitHub2LabConfig) -> PipelineStateStorage:
+    if config.pipeline_state_file is None:
+        return NullPipelineStateStore()
+    return FilePipelineStateStore(config.pipeline_state_file)
+
+
 def _normalize_terminal_status(status: str) -> RunnerStatus | None:
-    return _TERMINAL_STATUS_MAP.get(status.strip().casefold())
+    normalized_status = status.strip().casefold()
+    if not is_terminal_pipeline_status(normalized_status):
+        return None
+    return _TERMINAL_STATUS_MAP.get(normalized_status, "error")

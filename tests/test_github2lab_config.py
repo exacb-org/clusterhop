@@ -5,10 +5,13 @@
 
 """Tests for GitHub-to-GitLab configuration loading and validation."""
 
+from pathlib import Path
+
 import pytest
 
 from clusterhop.github2lab.config import (
     DEFAULT_LOG_SUMMARY_LIMIT_BYTES,
+    DEFAULT_CLEANUP_TIMEOUT_SECONDS,
     DEFAULT_PIPELINE_TIMEOUT_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
     ConfigurationError,
@@ -62,6 +65,8 @@ def test_loads_project_id_and_prototype_defaults() -> None:
     assert config.pipeline_timeout_seconds == DEFAULT_PIPELINE_TIMEOUT_SECONDS == 150.0
     assert config.log_summary_limit_bytes == DEFAULT_LOG_SUMMARY_LIMIT_BYTES == 800_000
     assert config.extra_pipeline_variables == {}
+    assert config.cleanup_timeout_seconds == DEFAULT_CLEANUP_TIMEOUT_SECONDS == 10.0
+    assert config.pipeline_state_file is None
 
 
 def test_loads_project_path_instead_of_project_id() -> None:
@@ -82,6 +87,8 @@ def test_loads_runtime_overrides() -> None:
             "CLUSTERHOP_POLL_INTERVAL_SECONDS": "2.5",
             "CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS": "300",
             "CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES": "1000000",
+            "CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS": "7.5",
+            "CLUSTERHOP_PIPELINE_STATE_FILE": "/tmp/github2lab-state.json",
         }
     )
 
@@ -90,6 +97,8 @@ def test_loads_runtime_overrides() -> None:
     assert config.poll_interval_seconds == 2.5
     assert config.pipeline_timeout_seconds == 300.0
     assert config.log_summary_limit_bytes == 1_000_000
+    assert config.cleanup_timeout_seconds == 7.5
+    assert config.pipeline_state_file == Path("/tmp/github2lab-state.json")
 
 
 @pytest.mark.parametrize(
@@ -142,6 +151,7 @@ def test_rejects_project_id_and_path_together() -> None:
         ("CLUSTERHOP_POLL_INTERVAL_SECONDS", "not-a-number"),
         ("CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS", "not-a-number"),
         ("CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES", "1.5"),
+        ("CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS", "not-a-number"),
     ],
 )
 def test_rejects_non_numeric_runtime_overrides(environment_name: str, value: str) -> None:
@@ -161,6 +171,8 @@ def test_rejects_non_numeric_runtime_overrides(environment_name: str, value: str
         ("CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS", "-1", "pipeline_timeout_seconds"),
         ("CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES", "0", "log_summary_limit_bytes"),
         ("CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES", "-1", "log_summary_limit_bytes"),
+        ("CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS", "0", "cleanup_timeout_seconds"),
+        ("CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS", "-1", "cleanup_timeout_seconds"),
     ],
 )
 def test_rejects_non_positive_runtime_overrides(
@@ -186,6 +198,23 @@ def test_rejects_pipeline_timeout_shorter_than_poll_interval() -> None:
     message = str(captured_error.value)
     assert "pipeline_timeout_seconds" in message
     assert "poll_interval_seconds" in message
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_rejects_non_finite_cleanup_timeout(value: str) -> None:
+    environ = valid_environment()
+    environ["CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS"] = value
+
+    with pytest.raises(ConfigurationError, match="cleanup_timeout_seconds"):
+        load_config_from_environment(environ)
+
+
+def test_rejects_blank_pipeline_state_file() -> None:
+    environ = valid_environment()
+    environ["CLUSTERHOP_PIPELINE_STATE_FILE"] = "   "
+
+    with pytest.raises(ConfigurationError, match="CLUSTERHOP_PIPELINE_STATE_FILE"):
+        load_config_from_environment(environ)
 
 
 @pytest.mark.parametrize("secret", [GITLAB_TOKEN, GITLAB_TRIGGER_TOKEN])
