@@ -158,11 +158,13 @@ class FakeGitLabClient:
         pipeline_updates: list[GitLabPipeline] | None = None,
         jobs: tuple[GitLabJob, ...] = (),
         trace: bytes = b"",
+        cancel_result: GitLabPipeline | None = None,
     ) -> None:
         self.trigger_result = trigger_pipeline or _pipeline("pending")
         self.pipeline_updates = list(pipeline_updates or [_pipeline("success")])
         self.jobs = jobs
         self.trace = trace
+        self.cancel_result = cancel_result or _pipeline("canceled")
         self.hooks: dict[str, Callable[[], None]] = {}
         self.errors: dict[str, Exception] = {}
         self.calls: list[tuple[str, object]] = []
@@ -202,7 +204,7 @@ class FakeGitLabClient:
         self.cancel_pipeline_ids.append(pipeline_id)
         self.cancel_timeouts.append(timeout_seconds)
         self._before_return("cancel")
-        return _pipeline("canceled")
+        return self.cancel_result
 
     def _before_return(self, operation: str) -> None:
         hook = self.hooks.get(operation)
@@ -436,6 +438,22 @@ def test_signal_during_timeout_cleanup_does_not_duplicate_cancel_request() -> No
     assert gitlab.cancel_pipeline_ids == [42]
 
 
+def test_timeout_accepts_canceling_response_and_marks_state_inactive() -> None:
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(
+        pipeline_updates=[_pipeline("running")],
+        cancel_result=_pipeline("canceling"),
+    )
+
+    result = _runner(gitlab=gitlab, state_store=state_store).run()
+
+    assert result.status == "timeout"
+    assert result.pipeline == _pipeline("canceling")
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert state_store.states[-1].active is False
+    assert state_store.states[-1].pipeline_status == "canceling"
+
+
 def test_no_jobs_produces_clear_fallback_without_trace_request() -> None:
     gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("success")], jobs=())
 
@@ -528,6 +546,25 @@ def test_cancellation_during_trigger_cancels_newly_known_pipeline_once() -> None
     assert result.status == "canceled"
     assert result.pipeline == _pipeline("canceled")
     assert gitlab.cancel_pipeline_ids == [42]
+
+
+def test_manual_cancellation_accepts_canceling_response() -> None:
+    cancellation = FakeCancellationController()
+    state_store = RecordingStateStore()
+    gitlab = FakeGitLabClient(cancel_result=_pipeline("canceling"))
+    gitlab.hooks["trigger"] = cancellation.request_cancellation
+
+    result = _runner(
+        gitlab=gitlab,
+        cancellation=cancellation,
+        state_store=state_store,
+    ).run()
+
+    assert result.status == "canceled"
+    assert result.pipeline == _pipeline("canceling")
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert state_store.states[-1].active is False
+    assert state_store.states[-1].pipeline_status == "canceling"
 
 
 def test_duplicate_cancellation_during_polling_cancels_pipeline_once() -> None:

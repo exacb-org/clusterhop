@@ -29,6 +29,7 @@ from clusterhop.github2lab.state import (
     NullPipelineStateStore,
     PipelineState,
     PipelineStateStorage,
+    is_cancellation_accepted_status,
     is_terminal_pipeline_status,
     pipeline_state_from_config,
 )
@@ -183,7 +184,12 @@ class _RuntimeState:
     cancellation_attempted: bool = False
     cancellation_cleanup_failed: bool = False
 
-    def update_pipeline(self, pipeline: GitLabPipeline) -> None:
+    def update_pipeline(
+        self,
+        pipeline: GitLabPipeline,
+        *,
+        persistent_active: bool | None = None,
+    ) -> None:
         if self.pipeline is not None and pipeline.id != self.pipeline.id:
             raise RunnerError("GitLab returned an unexpected pipeline identifier.")
         if self.pipeline_is_terminal and _normalize_terminal_status(pipeline.status) is None:
@@ -192,17 +198,18 @@ class _RuntimeState:
             return
         self.pipeline = pipeline
         self.pipeline_is_terminal = _normalize_terminal_status(pipeline.status) is not None
+        active = not self.pipeline_is_terminal if persistent_active is None else persistent_active
         persistent_state = self.persisted_state
         if persistent_state is None:
             persistent_state = pipeline_state_from_config(
                 self.config,
                 pipeline,
-                active=not self.pipeline_is_terminal,
+                active=active,
             )
         else:
             persistent_state = persistent_state.with_pipeline(
                 pipeline,
-                active=not self.pipeline_is_terminal,
+                active=active,
             )
         self.state_store.write(persistent_state)
         self.persisted_state = persistent_state
@@ -217,10 +224,12 @@ class _RuntimeState:
                 pipeline.id,
                 timeout_seconds=self.config.cleanup_timeout_seconds,
             )
+            if not is_cancellation_accepted_status(canceled_pipeline.status):
+                raise RunnerError("GitLab did not accept pipeline cancellation.")
+            self.update_pipeline(canceled_pipeline, persistent_active=False)
         except Exception:
             self.cancellation_cleanup_failed = True
             raise
-        self.update_pipeline(canceled_pipeline)
 
 
 class _CancellationRequested(Exception):

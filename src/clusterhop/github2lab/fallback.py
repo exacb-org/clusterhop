@@ -22,11 +22,18 @@ from clusterhop.github2lab.state import (
     PipelineState,
     PipelineStateError,
     PipelineStateStorage,
+    is_cancellation_accepted_status,
     is_terminal_pipeline_status,
     project_identifier_from_config,
 )
 
-FallbackAction = Literal["no_state", "already_inactive", "already_terminal", "canceled"]
+FallbackAction = Literal[
+    "no_state",
+    "already_inactive",
+    "already_terminal",
+    "cancellation_accepted",
+    "canceled",
+]
 
 
 class FallbackCancellationError(RuntimeError):
@@ -79,19 +86,27 @@ def cancel_pipeline_from_state(
         if is_terminal_pipeline_status(pipeline.status):
             state_store.write(state.with_pipeline(pipeline, active=False))
             return FallbackCancellationResult("already_terminal", state.pipeline_id)
+        if is_cancellation_accepted_status(pipeline.status):
+            state_store.write(state.with_pipeline(pipeline, active=False))
+            return FallbackCancellationResult("cancellation_accepted", state.pipeline_id)
 
         canceled_pipeline = gitlab.cancel_pipeline(
             state.pipeline_id,
             timeout_seconds=config.cleanup_timeout_seconds,
         )
-        if canceled_pipeline.id != state.pipeline_id or not is_terminal_pipeline_status(
+        if canceled_pipeline.id != state.pipeline_id or not is_cancellation_accepted_status(
             canceled_pipeline.status
         ):
             raise FallbackCancellationError(
                 "GitLab did not confirm fallback pipeline cancellation."
             )
         state_store.write(state.with_pipeline(canceled_pipeline, active=False))
-        return FallbackCancellationResult("canceled", state.pipeline_id)
+        action: FallbackAction = (
+            "canceled"
+            if is_terminal_pipeline_status(canceled_pipeline.status)
+            else "cancellation_accepted"
+        )
+        return FallbackCancellationResult(action, state.pipeline_id)
     except FallbackCancellationError:
         raise
     except Exception:
@@ -142,6 +157,7 @@ def main() -> int:
         "no_state": "No active GitLab pipeline state was recorded.",
         "already_inactive": "The recorded GitLab pipeline is already inactive.",
         "already_terminal": "The recorded GitLab pipeline is already terminal.",
+        "cancellation_accepted": "GitLab accepted the pipeline cancellation request.",
         "canceled": "The active GitLab pipeline was canceled by fallback cleanup.",
     }
     print(messages[result.action])

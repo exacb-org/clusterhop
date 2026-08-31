@@ -22,6 +22,7 @@ MAX_PIPELINE_STATE_BYTES = 64 * 1024
 TERMINAL_PIPELINE_STATUSES = frozenset(
     {"success", "failed", "canceled", "cancelled", "skipped", "timeout", "timed_out"}
 )
+CANCELLATION_ACCEPTED_PIPELINE_STATUSES = frozenset({"canceling", "canceled", "cancelled"})
 _STATE_FIELDS = frozenset(
     {
         "schema_version",
@@ -227,6 +228,12 @@ def is_terminal_pipeline_status(status: str) -> bool:
     """Return whether GitLab status represents a completed pipeline."""
 
     return status.strip().casefold() in TERMINAL_PIPELINE_STATUSES
+
+
+def is_cancellation_accepted_status(status: str) -> bool:
+    """Return whether GitLab accepted or completed a pipeline cancellation request."""
+
+    return status.strip().casefold() in CANCELLATION_ACCEPTED_PIPELINE_STATUSES
 
 
 def _fsync_directory(directory: Path) -> None:

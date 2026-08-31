@@ -8,14 +8,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from clusterhop.github2lab.config import GitHub2LabConfig
 from clusterhop.github2lab.fallback import (
     FallbackCancellationError,
+    FallbackCancellationResult,
     cancel_pipeline_from_state,
     cancel_pipeline_from_state_environment,
+    main,
 )
 from clusterhop.github2lab.models import GitLabPipeline
 from clusterhop.github2lab.state import PipelineState
@@ -158,6 +161,49 @@ def test_active_pipeline_is_canceled_once_with_cleanup_timeout() -> None:
     assert store.state is not None
     assert store.state.active is False
     assert store.state.pipeline_status == "canceled"
+
+
+def test_canceling_response_is_accepted_and_repeated_fallback_is_safe() -> None:
+    store = MemoryStateStore(_state())
+    gitlab = FakeGitLab(canceled=_pipeline("canceling"))
+
+    first_result = cancel_pipeline_from_state(_config(), store, gitlab)
+    second_result = cancel_pipeline_from_state(_config(), store, gitlab)
+
+    assert first_result.action == "cancellation_accepted"
+    assert second_result.action == "already_inactive"
+    assert gitlab.get_calls == [42]
+    assert gitlab.cancel_calls == [(42, 7.0)]
+    assert store.state is not None
+    assert store.state.active is False
+    assert store.state.pipeline_status == "canceling"
+
+
+def test_already_canceling_pipeline_is_marked_inactive_without_duplicate_cancel() -> None:
+    store = MemoryStateStore(_state())
+    gitlab = FakeGitLab(current=_pipeline("canceling"))
+
+    result = cancel_pipeline_from_state(_config(), store, gitlab)
+
+    assert result.action == "cancellation_accepted"
+    assert gitlab.get_calls == [42]
+    assert gitlab.cancel_calls == []
+    assert store.state is not None
+    assert store.state.active is False
+    assert store.state.pipeline_status == "canceling"
+
+
+def test_command_exits_successfully_when_cancellation_is_accepted(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch(
+        "clusterhop.github2lab.fallback.cancel_pipeline_from_state_environment",
+        return_value=FallbackCancellationResult("cancellation_accepted", 42),
+    ):
+        exit_code = main()
+
+    assert exit_code == 0
+    assert "accepted" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("status", ["success", "failed", "canceled", "skipped"])

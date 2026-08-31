@@ -21,6 +21,7 @@ from clusterhop.github2lab.state import (
     FilePipelineStateStore,
     PipelineState,
     PipelineStateError,
+    is_cancellation_accepted_status,
     pipeline_state_from_config,
 )
 
@@ -156,3 +157,12 @@ def test_project_path_identity_is_unambiguous() -> None:
     state = pipeline_state_from_config(config, _pipeline(), active=True)
 
     assert state.project_identifier == "path:group/project"
+
+
+@pytest.mark.parametrize("status", ["canceling", "canceled", "cancelled", " CANCELING "])
+def test_cancellation_accepted_statuses(status: str) -> None:
+    assert is_cancellation_accepted_status(status) is True
+
+
+def test_running_is_not_a_cancellation_accepted_status() -> None:
+    assert is_cancellation_accepted_status("running") is False
