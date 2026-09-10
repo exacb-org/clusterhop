@@ -15,7 +15,8 @@ authors = [
 dependencies = [
   "semver",
   "pexpect",
-  "jsonschema"
+  "jsonschema",
+  "pyyaml"
 ]
 
 [project.urls]
@@ -87,5 +88,3 @@ dependencies = [
 dependencies = [
   "black"
 ]
-
-
