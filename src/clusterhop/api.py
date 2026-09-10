@@ -76,7 +76,7 @@ def run(
         )
 
     environment = _github_metadata_from_environment()
-    _copy_string_fields(config, _CONFIG_ENVIRONMENT_FIELDS, environment)
+    _copy_config_fields(config, environment)
     _copy_secret_fields(secrets, environment)
     _copy_option_fields(options, environment)
 
@@ -126,14 +126,17 @@ def _github_metadata_from_environment() -> dict[str, str]:
     return environment
 
 
-def _copy_string_fields(
-    source: InputObject,
-    fields: Mapping[str, str],
-    environment: dict[str, str],
-) -> None:
-    for field_name, environment_name in fields.items():
+def _copy_config_fields(source: InputObject, environment: dict[str, str]) -> None:
+    for field_name, environment_name in _CONFIG_ENVIRONMENT_FIELDS.items():
         value = _input_value(source, field_name)
         if value is _MISSING or value is None:
+            continue
+        if (
+            field_name == "gitlab_project_id"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            environment[environment_name] = str(value)
             continue
         if not isinstance(value, str):
             raise RunConfigurationError(f"Run configuration field {field_name} must be a string.")

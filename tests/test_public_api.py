@@ -165,6 +165,32 @@ def test_run_accepts_already_loaded_objects() -> None:
     assert environment["CLUSTERHOP_POLL_INTERVAL_SECONDS"] == "3"
 
 
+@pytest.mark.parametrize(
+    ("project_fields", "expected_environment"),
+    [
+        ({"gitlab_project_id": 8894}, {"GITLAB_PROJECT_ID": "8894"}),
+        ({"gitlab_project_path": "group/project"}, {"GITLAB_PROJECT_PATH": "group/project"}),
+    ],
+)
+def test_run_accepts_flat_project_id_or_path(
+    project_fields: dict[str, object],
+    expected_environment: dict[str, str],
+) -> None:
+    config = _config()
+    config.pop("gitlab_project_id")
+    config.update(project_fields)
+
+    with patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend:
+        clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+
+    environment = backend.call_args.args[0]
+    for name, value in expected_environment.items():
+        assert environment[name] == value
+    assert not ({"GITLAB_PROJECT_ID", "GITLAB_PROJECT_PATH"} - expected_environment.keys()) & set(
+        environment
+    )
+
+
 @pytest.mark.parametrize("destination_type", ["github", "forgejo", "unknown"])
 def test_run_rejects_unsupported_destination(destination_type: str) -> None:
     with patch("clusterhop.api.run_from_environment") as backend:

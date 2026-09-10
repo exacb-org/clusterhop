@@ -1,0 +1,5 @@
+# Optional flat runtime settings.
+poll_interval_seconds: 5
+pipeline_timeout_seconds: 150
+pipeline_state_file: /tmp/github2lab-pipeline-state.json
+cleanup_timeout_seconds: 10

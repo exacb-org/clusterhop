@@ -25,10 +25,22 @@ def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     options_path = tmp_path / "options.yaml"
     secrets_path = tmp_path / "secrets.yaml"
     config_path.write_text(
-        "destination_type: gitlab\ngitlab_url: https://gitlab.example.test\n",
+        "destination_type: gitlab\n"
+        "gitlab_url: https://gitlab.example.test\n"
+        "gitlab_remote_url: https://gitlab.example.test/group/project.git\n"
+        "gitlab_project_id: 8894\n"
+        "github_repository: example/source-project\n"
+        "github_commit_sha: 0123456789abcdef0123456789abcdef01234567\n"
+        'github_run_id: "987654"\n',
         encoding="utf-8",
     )
-    options_path.write_text("poll_interval_seconds: 3\n", encoding="utf-8")
+    options_path.write_text(
+        "poll_interval_seconds: 3\n"
+        "pipeline_timeout_seconds: 150\n"
+        "pipeline_state_file: /tmp/github2lab-pipeline-state.json\n"
+        "cleanup_timeout_seconds: 10\n",
+        encoding="utf-8",
+    )
     secrets_path.write_text(
         f"gitlab_token: {DUMMY_TOKEN}\ngitlab_trigger_token: dummy-trigger-token\n",
         encoding="utf-8",
@@ -63,9 +75,19 @@ def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None
         config={
             "destination_type": "gitlab",
             "gitlab_url": "https://gitlab.example.test",
+            "gitlab_remote_url": "https://gitlab.example.test/group/project.git",
+            "gitlab_project_id": 8894,
+            "github_repository": "example/source-project",
+            "github_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+            "github_run_id": "987654",
         },
         repo_path=tmp_path,
-        options={"poll_interval_seconds": 3},
+        options={
+            "poll_interval_seconds": 3,
+            "pipeline_timeout_seconds": 150,
+            "pipeline_state_file": "/tmp/github2lab-pipeline-state.json",
+            "cleanup_timeout_seconds": 10,
+        },
         secrets={
             "gitlab_token": DUMMY_TOKEN,
             "gitlab_trigger_token": "dummy-trigger-token",

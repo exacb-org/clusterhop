@@ -102,9 +102,9 @@ raise SystemExit(result.exit_code)
 
 `github2lab-test` currently uses this function. It remains useful during migration, but its long-term public support status has not been decided.
 
-### 5.2 Proposed Public Python API
+### 5.2 Current Public Python API
 
-**Status:** Agreed direction; not yet implemented.
+**Status:** Implemented and available as the current public Python API.
 
 ```python
 clusterhop.run(
@@ -115,17 +115,17 @@ clusterhop.run(
 )
 ```
 
-This general API represents a run against a configured destination. It is not limited to the current GitHub-to-GitLab bridge and can describe destination types such as GitLab, GitHub, or Forgejo.
+This general API represents a run against a configured destination. The current implementation supports GitLab; other destination types such as GitHub or Forgejo remain future work.
 
-### 5.3 Proposed Public CLI
+### 5.3 Current Public CLI
 
-**Status:** Agreed direction; not yet implemented.
+**Status:** Implemented and available as the current public CLI.
 
 ```bash
 clusterhop run --config config.yaml --options options.yaml <repo-path> --secrets secrets.yaml
 ```
 
-The CLI should call the same general run API. It replaces the earlier `clusterhop github2lab` proposal. Compatibility with the existing legacy `clusterhop run SOURCE_FILE DESTINATION_NAME` behavior must be handled deliberately during implementation.
+The CLI calls the same general run API. It replaces the earlier `clusterhop github2lab` proposal while preserving the existing legacy `clusterhop run SOURCE_FILE DESTINATION_NAME` behavior through deliberate command dispatch.
 
 ### 5.4 Current GitHub Actions Integration
 
@@ -154,19 +154,52 @@ The wrapper should be a later, preferably separate layer that invokes the stable
 
 ## 6. Configuration API
 
-The current implementation loads environment variables. The proposed public API moves toward separate configuration, options, and secrets inputs without exposing sensitive values.
+The public API and CLI support separate configuration, options, and secrets inputs without exposing sensitive values. The existing environment-based integration remains supported during migration.
 
-### 6.1 Proposed Input Separation
+### 6.1 Current Input Separation
 
 - `config` describes the destination and project, including destination type such as GitLab, GitHub, or Forgejo.
-- `options` describes runtime behavior, including wait time, timeout/failure time, retry counts, target branch options, polling interval, log limit, and cleanup timeout.
+- `options` describes the currently supported runtime behavior: polling interval, pipeline timeout, pipeline state file, and cleanup timeout.
 - `secrets` contains secret values or references needed to authenticate with the destination.
 
-The exact YAML schemas remain open design work. `seanvault` is the planned or possible mechanism for encrypted secret fields in readable configuration or credentials files, including CI use. Password/key delivery for decrypting those fields must be designed separately.
+The current YAML contract is intentionally flat. Nested organization may be added later, but it is not supported by the current public format. `seanvault` is the planned or possible mechanism for encrypted secret fields in readable configuration or credentials files, including CI use. Password/key delivery for decrypting those fields must be designed separately.
 
 Secrets must never appear in summaries, pipeline state, logs, exceptions, or other persisted non-secret output.
 
-### 6.2 Current Environment Contract
+### 6.2 Current Flat YAML Contract
+
+```yaml
+# config.yaml
+destination_type: gitlab
+gitlab_url: https://gitlab.example.com
+gitlab_remote_url: https://gitlab.example.com/group/project.git
+gitlab_project_id: 1234
+github_repository: example-org/example-repository
+github_commit_sha: 0123456789abcdef0123456789abcdef01234567
+github_run_id: "987654"
+```
+
+Use `gitlab_project_path` instead of `gitlab_project_id` when the project path is preferred; do not provide both.
+
+```yaml
+# options.yaml (optional)
+poll_interval_seconds: 5
+pipeline_timeout_seconds: 150
+pipeline_state_file: /tmp/github2lab-pipeline-state.json
+cleanup_timeout_seconds: 10
+```
+
+`CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES` remains environment-variable based and is not an `options.yaml` field.
+
+```yaml
+# secrets.yaml
+gitlab_token: <gitlab-token>
+gitlab_trigger_token: <gitlab-trigger-token>
+```
+
+The CLI loads these files as mappings and passes them to `clusterhop.run(...)`. Secret values must remain out of logs, summaries, errors, and pipeline state.
+
+### 6.3 Current Environment Contract
 
 The validated GitHub-to-GitLab implementation currently uses the following environment variables during migration.
 
@@ -199,7 +232,7 @@ When GitHub Actions supplies `GITHUB_STEP_SUMMARY`, it selects the summary outpu
 
 ## 7. Runtime Behavior
 
-The GitHub Actions summary should show the overall pipeline status and every pipeline job in a clear table, including successful and failed jobs. When multiple jobs exist, the public behavior should not select or prioritize one job as the "main" job. Detailed log presentation for multiple jobs still requires implementation design.
+The GitHub Actions summary shows the overall pipeline status and every pipeline job in a clear table, including successful and failed jobs. When multiple jobs exist, it does not select or prioritize one job as the "main" job; users follow the per-job GitLab links for detailed logs.
 
 ### Success
 
@@ -255,9 +288,8 @@ This general command replaces the earlier `clusterhop github2lab` proposal. Impl
 
 ## 10. Open Design Questions
 
-- What is the exact `config.yaml` structure?
-- What is the exact `options.yaml` structure?
-- What is the exact `secrets.yaml` structure, and how should the `seanvault` password or key be supplied safely in CI?
+- When, if ever, should the current flat `config.yaml` and `options.yaml` structures gain nested organization?
+- How should `secrets.yaml` evolve for `seanvault`, and how should its password or key be supplied safely in CI?
 - What is the release path: pinned commits, Git tags, PyPI, or a staged combination?
 - What should the future GitHub Action wrapper repository, name, and location be?
 
@@ -277,14 +309,11 @@ The implementation has been tested end to end through `github2lab-test` for:
 
 Unit tests also cover configuration, Git/GitLab boundaries, logs, summaries, runner lifecycle, state persistence, and cancellation/fallback without real secrets or network calls.
 
-This validates the current GitHub-to-GitLab workflow. The public API direction changed after review and is not implemented by this baseline.
+This validates the current GitHub-to-GitLab workflow. The public Python API, CLI, flat YAML loading, and all-jobs summary behavior are now implemented.
 
 ## 12. Recommended Next Steps
 
-1. Review the updated model and API if further clarification is needed.
-2. Implement `clusterhop.run(config, repo_path, options, secrets)`.
-3. Implement the `clusterhop run ...` CLI while addressing legacy CLI compatibility.
-4. Add validated `config`, `options`, and `secrets` file loading.
-5. Integrate `seanvault` for approved encrypted-secret handling.
-6. Update summary behavior to show all pipeline jobs clearly without choosing a main job.
-7. Later create a reusable GitHub Action wrapper as a separate layer or repository.
+1. Integrate `seanvault` for approved encrypted-secret handling.
+2. Update GitHub Actions usage to pass configuration and options files while supplying secrets safely.
+3. Later create a reusable GitHub Action wrapper as a separate layer or repository.
+4. Later perform end-to-end testing that includes multi-job GitLab pipelines and the updated all-jobs summary behavior.
