@@ -23,7 +23,7 @@ from clusterhop.github2lab.runner import (
     GitHub2LabRunner,
     RunnerError,
     SummaryWriteError,
-    select_main_job,
+    select_log_job,
 )
 from clusterhop.github2lab.summary import GitHubSummaryData, render_github_summary
 from clusterhop.github2lab.state import PipelineState, PipelineStateStorage
@@ -310,10 +310,11 @@ def test_successful_run_connects_all_workers() -> None:
     assert result.branch_name == BRANCH_NAME
     assert result.pipeline == _pipeline("success")
     assert result.jobs == (first_job, second_job)
-    assert result.selected_job == first_job
-    assert result.processed_log.text == "tests passed\n"
+    assert result.selected_job is None
+    assert result.processed_log.is_unavailable is True
     assert "**Status:** ✅ Success" in result.summary
     assert "**Total jobs:** 2" in result.summary
+    assert "### Job log" not in result.summary
     assert writer.summaries == [result.summary]
     assert clock.sleeps == [2.0]
     assert gitlab.calls == [
@@ -321,10 +322,26 @@ def test_successful_run_connects_all_workers() -> None:
         ("get_pipeline", 42),
         ("get_pipeline", 42),
         ("get_jobs", 42),
-        ("get_trace", 101),
     ]
     assert cancellation.entered is True
     assert cancellation.exited is True
+
+
+def test_single_job_run_fetches_and_embeds_its_log() -> None:
+    job = _job()
+    gitlab = FakeGitLabClient(
+        pipeline_updates=[_pipeline("success")],
+        jobs=(job,),
+        trace=b"tests passed\n",
+    )
+
+    result = _runner(gitlab=gitlab).run()
+
+    assert result.selected_job == job
+    assert result.processed_log.text == "tests passed\n"
+    assert ("get_trace", job.id) in gitlab.calls
+    assert "### Job log" in result.summary
+    assert "tests passed" in result.summary
 
 
 @pytest.mark.parametrize(
@@ -690,12 +707,13 @@ def test_runner_repr_does_not_expose_configuration_secrets() -> None:
     assert DUMMY_TRIGGER_TOKEN not in representation
 
 
-def test_select_main_job_uses_first_job() -> None:
+def test_select_log_job_returns_only_single_job() -> None:
     first_job = _job(101, "first")
     second_job = _job(102, "second")
 
-    assert select_main_job((first_job, second_job)) == first_job
-    assert select_main_job(()) is None
+    assert select_log_job((first_job,)) == first_job
+    assert select_log_job((first_job, second_job)) is None
+    assert select_log_job(()) is None
 
 
 def test_file_summary_writer_appends_utf8_markdown(tmp_path: Path) -> None:

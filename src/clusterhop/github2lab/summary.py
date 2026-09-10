@@ -75,7 +75,8 @@ def render_github_summary(data: GitHubSummaryData) -> str:
             lines.append(f"- **GitLab pipeline SHA:** `{_escape_inline_code(pipeline.sha)}`")
 
     lines.extend(_render_jobs(data.jobs))
-    lines.extend(_render_log(data.selected_job, data.processed_log))
+    if len(data.jobs) <= 1:
+        lines.extend(_render_log(data.selected_job, data.processed_log))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -133,14 +134,12 @@ def _render_jobs(jobs: Sequence[GitLabJob]) -> list[str]:
 
 
 def _render_log(selected_job: GitLabJob | None, processed_log: ProcessedJobLog) -> list[str]:
-    lines = ["", "### Main job log", ""]
+    lines = ["", "### Job log", ""]
     if selected_job is None:
-        lines.append("**Selected job:** Not available")
+        lines.append("**Job:** Not available")
     else:
         selected_job_label = _escape_markdown_text(selected_job.name)
-        lines.append(
-            f"**Selected job:** {_markdown_link(selected_job_label, selected_job.web_url)}"
-        )
+        lines.append(f"**Job:** {_markdown_link(selected_job_label, selected_job.web_url)}")
 
     size_description = (
         "Unavailable"

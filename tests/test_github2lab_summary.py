@@ -50,7 +50,7 @@ def _job(**overrides: object) -> GitLabJob:
 
 
 def _summary_data(**overrides: object) -> GitHubSummaryData:
-    main_job = _job()
+    job = _job()
     values: dict[str, object] = {
         "status": "success",
         "github_commit_sha": "0123456789abcdef",
@@ -58,8 +58,8 @@ def _summary_data(**overrides: object) -> GitHubSummaryData:
         "github_run_id": "987654",
         "gitlab_branch": "ci/0123456789abcdef",
         "pipeline": _pipeline(),
-        "jobs": (main_job,),
-        "selected_job": main_job,
+        "jobs": (job,),
+        "selected_job": job,
         "processed_log": process_job_log(b"tests passed\n"),
     }
     values.update(overrides)
@@ -144,7 +144,7 @@ def test_one_job_table_contains_link_and_formatted_duration() -> None:
     assert f"| test | [unit tests]({JOB_URL}) | success | 3.50 s |" in summary
 
 
-def test_multiple_jobs_are_all_rendered() -> None:
+def test_multiple_mixed_status_jobs_are_all_rendered_without_prioritized_log() -> None:
     first_job = _job()
     second_job = _job(
         id=102,
@@ -162,6 +162,54 @@ def test_multiple_jobs_are_all_rendered() -> None:
     assert "**Total jobs:** 2" in summary
     assert f"| test | [unit tests]({JOB_URL}) | success | 3.50 s |" in summary
     assert "| build | package | failed | 1m 5s |" in summary
+    assert "### Job log" not in summary
+    assert "Main job" not in summary
+    assert "Selected job" not in summary
+
+
+def test_multiple_successful_jobs_are_all_rendered_without_embedded_log() -> None:
+    first_job = _job(name="unit tests")
+    second_job = _job(
+        id=102,
+        name="package",
+        stage="build",
+        web_url="https://gitlab.example.test/group/project/-/jobs/102",
+    )
+
+    summary = render_github_summary(
+        _summary_data(jobs=(first_job, second_job), selected_job=first_job)
+    )
+
+    assert f"[unit tests]({JOB_URL})" in summary
+    assert "[package](https://gitlab.example.test/group/project/-/jobs/102)" in summary
+    assert summary.count("| success |") == 2
+    assert "tests passed" not in summary
+    assert "### Job log" not in summary
+
+
+def test_multiple_failed_jobs_are_all_rendered_without_embedded_log() -> None:
+    first_job = _job(name="lint", status="failed")
+    second_job = _job(
+        id=102,
+        name="unit tests",
+        status="failed",
+        web_url="https://gitlab.example.test/group/project/-/jobs/102",
+    )
+
+    summary = render_github_summary(
+        _summary_data(
+            status="failed",
+            jobs=(first_job, second_job),
+            selected_job=first_job,
+        )
+    )
+
+    assert "**Status:** ❌ Failed" in summary
+    assert f"[lint]({JOB_URL})" in summary
+    assert "[unit tests](https://gitlab.example.test/group/project/-/jobs/102)" in summary
+    assert summary.count("| failed |") == 2
+    assert "tests passed" not in summary
+    assert "### Job log" not in summary
 
 
 def test_no_jobs_has_clear_fallback() -> None:
@@ -169,7 +217,7 @@ def test_no_jobs_has_clear_fallback() -> None:
 
     assert "**Total jobs:** 0" in summary
     assert "No GitLab jobs were available for this pipeline." in summary
-    assert "**Selected job:** Not available" in summary
+    assert "**Job:** Not available" in summary
 
 
 @pytest.mark.parametrize(
@@ -193,6 +241,8 @@ def test_embeddable_log_is_included_with_size_information() -> None:
 
     summary = render_github_summary(_summary_data(processed_log=processed_log))
 
+    assert "### Job log" in summary
+    assert f"**Job:** [unit tests]({JOB_URL})" in summary
     assert "- **Cleaned log size:** 18 bytes (0.02 KiB)" in summary
     assert "- **Summary log limit:** 100 bytes (0.10 KiB)" in summary
     assert "```text\nline one\nline two\n\n```" in summary

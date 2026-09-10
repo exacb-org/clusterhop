@@ -324,9 +324,9 @@ class GitHub2LabRunner:
                 jobs = self._gitlab.get_pipeline_jobs(completed_pipeline.id)
                 self._checkpoint_cancellation(state)
 
-                selected_job = select_main_job(jobs)
+                selected_job = select_log_job(jobs)
                 if selected_job is not None:
-                    operation = "fetching the selected GitLab job log"
+                    operation = "fetching the GitLab job log"
                     try:
                         raw_trace = self._gitlab.get_job_trace(selected_job.id)
                     except Exception:
@@ -516,10 +516,10 @@ class GitHub2LabRunner:
         )
 
 
-def select_main_job(jobs: tuple[GitLabJob, ...]) -> GitLabJob | None:
-    """Select the first GitLab job, preserving the prototype's simple behavior."""
+def select_log_job(jobs: tuple[GitLabJob, ...]) -> GitLabJob | None:
+    """Return the only job when its log can be represented without prioritization."""
 
-    return jobs[0] if jobs else None
+    return jobs[0] if len(jobs) == 1 else None
 
 
 def run_from_environment(
