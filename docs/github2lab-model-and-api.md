@@ -162,7 +162,7 @@ The public API and CLI support separate configuration, options, and secrets inpu
 - `options` describes the currently supported runtime behavior: polling interval, pipeline timeout, pipeline state file, and cleanup timeout.
 - `secrets` contains secret values or references needed to authenticate with the destination.
 
-The current YAML contract is intentionally flat. Nested organization may be added later, but it is not supported by the current public format. `seanvault` is the planned or possible mechanism for encrypted secret fields in readable configuration or credentials files, including CI use. Password/key delivery for decrypting those fields must be designed separately.
+The current YAML contract is intentionally flat. Nested organization may be added later, but it is not supported by the current public format. Secrets may be supplied as plain YAML values or as explicitly marked Seanvault values.
 
 Secrets must never appear in summaries, pipeline state, logs, exceptions, or other persisted non-secret output.
 
@@ -197,7 +197,21 @@ gitlab_token: <gitlab-token>
 gitlab_trigger_token: <gitlab-trigger-token>
 ```
 
-The CLI loads these files as mappings and passes them to `clusterhop.run(...)`. Secret values must remain out of logs, summaries, errors, and pipeline state.
+Plain secrets YAML remains supported and does not require a Seanvault password. A Seanvault-managed file uses explicit markers:
+
+```yaml
+# secrets.yaml
+gitlab_token:
+  __seanvault__: secret
+  value: "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;..."
+gitlab_trigger_token:
+  __seanvault__: secret
+  value: "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;..."
+```
+
+When a secrets file contains a `__seanvault__` marker, the CLI requires `SEANVAULT_PASSWORD` from the environment and resolves the file with Seanvault. In GitHub Actions, this password should be stored as a GitHub Actions secret and exposed only to the ClusterHop step. Decrypted values are held in memory and passed as an ordinary mapping to `clusterhop.run(...)`; ClusterHop does not write decrypted plaintext back to disk.
+
+The CLI loads these files as mappings and passes them to `clusterhop.run(...)`. Secret values must remain out of logs, summaries, errors, and pipeline state. Step 8 will update the GitHub Actions workflow to use these files safely.
 
 ### 6.3 Current Environment Contract
 
@@ -272,24 +286,24 @@ For GitHub Actions, the current interface is the pinned-package workflow invokin
 
 The planned stable public surface is `clusterhop.run(config, repo_path, options, secrets)`, the `clusterhop run ...` CLI, documented config/options/secrets behavior, exit semantics, and relevant fallback behavior. Transport, storage, parsing, and orchestration helpers should remain internal.
 
-## 9. Proposed Public CLI API
+## 9. Current Public CLI API
 
-The agreed CLI direction is:
+The current CLI is:
 
 ```bash
 clusterhop run --config config.yaml --options options.yaml <repo-path> --secrets secrets.yaml
 ```
 
-The command should load the separated inputs, call the general `clusterhop.run(...)` API, write `GITHUB_STEP_SUMMARY` when running in GitHub Actions, and return the run result as a documented process exit code.
+The command loads the separated inputs, calls the general `clusterhop.run(...)` API, writes `GITHUB_STEP_SUMMARY` through the existing runner when running in GitHub Actions, and returns the run result as a documented process exit code.
 
-The `--secrets` argument identifies a secrets file; it must not accept secret values directly on the command line. `seanvault` may provide encrypted secret fields. Exact file schemas, validation, precedence, and CI password handling remain to be designed.
+The `--secrets` argument identifies a plain or Seanvault-marked secrets file; it does not accept secret values or the Seanvault password directly on the command line. Seanvault-marked files require `SEANVAULT_PASSWORD` in the environment.
 
-This general command replaces the earlier `clusterhop github2lab` proposal. Implementation must address compatibility with the existing legacy `clusterhop run SOURCE_FILE DESTINATION_NAME` command.
+This general command replaces the earlier `clusterhop github2lab` proposal while preserving compatibility with the existing legacy `clusterhop run SOURCE_FILE DESTINATION_NAME` command.
 
 ## 10. Open Design Questions
 
 - When, if ever, should the current flat `config.yaml` and `options.yaml` structures gain nested organization?
-- How should `secrets.yaml` evolve for `seanvault`, and how should its password or key be supplied safely in CI?
+- How should future secret backends coexist with the current Seanvault integration?
 - What is the release path: pinned commits, Git tags, PyPI, or a staged combination?
 - What should the future GitHub Action wrapper repository, name, and location be?
 
@@ -313,7 +327,6 @@ This validates the current GitHub-to-GitLab workflow. The public Python API, CLI
 
 ## 12. Recommended Next Steps
 
-1. Integrate `seanvault` for approved encrypted-secret handling.
-2. Update GitHub Actions usage to pass configuration and options files while supplying secrets safely.
-3. Later create a reusable GitHub Action wrapper as a separate layer or repository.
-4. Later perform end-to-end testing that includes multi-job GitLab pipelines and the updated all-jobs summary behavior.
+1. Update GitHub Actions usage to pass configuration and options files while supplying secrets and `SEANVAULT_PASSWORD` safely.
+2. Later create a reusable GitHub Action wrapper as a separate layer or repository.
+3. Later perform end-to-end testing that includes multi-job GitLab pipelines and the updated all-jobs summary behavior.

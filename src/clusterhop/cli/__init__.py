@@ -7,16 +7,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import yaml
+from seanvault import load as seanvault_load  # type: ignore[import-untyped]
+from seanvault.errors import SeanVaultError  # type: ignore[import-untyped]
 
 from clusterhop import RunConfigurationError, run as clusterhop_run
 
 _NEW_RUN_OPTIONS = ("--config", "--options", "--secrets")
+_SEANVAULT_PASSWORD_ENVIRONMENT_VARIABLE = "SEANVAULT_PASSWORD"
 
 
 class CliInputError(ValueError):
@@ -63,7 +67,7 @@ def _run_command(arguments: Sequence[str]) -> int:
         options = (
             _load_yaml_mapping(parsed.options, "options") if parsed.options is not None else None
         )
-        secrets = _load_yaml_mapping(parsed.secrets, "secrets")
+        secrets = _load_secrets_mapping(parsed.secrets)
         result = clusterhop_run(
             config=config,
             repo_path=parsed.repo_path,
@@ -96,6 +100,40 @@ def _load_yaml_mapping(path: Path, label: str) -> Mapping[str, object]:
     except (OSError, UnicodeError, yaml.YAMLError):
         raise CliInputError(f"Unable to load the {label} file.") from None
 
+    return _validate_loaded_mapping(loaded, label)
+
+
+def _load_secrets_mapping(path: Path) -> Mapping[str, object]:
+    loaded = _load_yaml_mapping(path, "secrets")
+    if not _contains_seanvault_marker(loaded):
+        return loaded
+
+    password = os.environ.get(_SEANVAULT_PASSWORD_ENVIRONMENT_VARIABLE)
+    if not password:
+        raise CliInputError(
+            "The SEANVAULT_PASSWORD environment variable is required for a "
+            "Seanvault-marked secrets file."
+        )
+
+    try:
+        resolved: object = seanvault_load(path, password)
+    except (SeanVaultError, OSError, UnicodeError, ValueError, TypeError):
+        raise CliInputError("Unable to decrypt the Seanvault secrets file.") from None
+
+    return _validate_loaded_mapping(resolved, "decrypted secrets")
+
+
+def _contains_seanvault_marker(value: object) -> bool:
+    if isinstance(value, Mapping):
+        if "__seanvault__" in value:
+            return True
+        return any(_contains_seanvault_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_seanvault_marker(item) for item in value)
+    return False
+
+
+def _validate_loaded_mapping(loaded: object, label: str) -> Mapping[str, object]:
     if not isinstance(loaded, Mapping) or not loaded:
         raise CliInputError(f"The {label} file must contain a non-empty mapping.")
 

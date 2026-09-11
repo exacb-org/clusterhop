@@ -18,6 +18,7 @@ from clusterhop import RunConfigurationError, RunResult
 from clusterhop.cli import main
 
 DUMMY_TOKEN = "dummy-private-token-that-must-not-appear"
+DUMMY_ENCRYPTED_VALUE = "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;encrypted-value"
 
 
 def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -50,6 +51,18 @@ def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def _successful_result() -> RunResult:
     return RunResult(status="success", exit_code=0, summary="summary")
+
+
+def _write_seanvault_secrets(path: Path) -> None:
+    path.write_text(
+        "gitlab_token:\n"
+        "  __seanvault__: secret\n"
+        f'  value: "{DUMMY_ENCRYPTED_VALUE}"\n'
+        "gitlab_trigger_token:\n"
+        "  __seanvault__: secret\n"
+        f'  value: "{DUMMY_ENCRYPTED_VALUE}"\n',
+        encoding="utf-8",
+    )
 
 
 def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None:
@@ -113,6 +126,118 @@ def test_new_run_command_passes_none_when_options_are_omitted(tmp_path: Path) ->
             main()
 
     assert backend.call_args.kwargs["options"] is None
+
+
+def test_plain_secrets_do_not_require_seanvault_password(tmp_path: Path) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    backend = Mock(return_value=_successful_result())
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.seanvault_load") as load,
+        patch("clusterhop.cli.clusterhop_run", backend),
+    ):
+        with pytest.raises(SystemExit, match="0"):
+            main()
+
+    load.assert_not_called()
+    assert backend.call_args.kwargs["secrets"]["gitlab_token"] == DUMMY_TOKEN
+
+
+def test_seanvault_secrets_are_decrypted_and_passed_to_public_api(tmp_path: Path) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    _write_seanvault_secrets(secrets_path)
+    backend = Mock(return_value=_successful_result())
+    resolved_secrets = {
+        "gitlab_token": DUMMY_TOKEN,
+        "gitlab_trigger_token": "dummy-decrypted-trigger-token",
+    }
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"SEANVAULT_PASSWORD": "dummy-vault-password"}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.seanvault_load", return_value=resolved_secrets) as load,
+        patch("clusterhop.cli.clusterhop_run", backend),
+    ):
+        with pytest.raises(SystemExit, match="0"):
+            main()
+
+    load.assert_called_once_with(secrets_path, "dummy-vault-password")
+    assert backend.call_args.kwargs["secrets"] == resolved_secrets
+
+
+def test_seanvault_secrets_require_environment_password(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    _write_seanvault_secrets(secrets_path)
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with patch.dict("os.environ", {}, clear=True), patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "SEANVAULT_PASSWORD" in captured.err
+    assert DUMMY_ENCRYPTED_VALUE not in captured.err
+    assert DUMMY_ENCRYPTED_VALUE not in captured.out
+
+
+def test_seanvault_decryption_failure_is_secret_safe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    _write_seanvault_secrets(secrets_path)
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    unsafe_error = f"wrong password for {DUMMY_ENCRYPTED_VALUE}"
+    with (
+        patch.dict("os.environ", {"SEANVAULT_PASSWORD": "wrong-password"}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.seanvault_load", side_effect=ValueError(unsafe_error)),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Unable to decrypt the Seanvault secrets file." in captured.err
+    assert DUMMY_ENCRYPTED_VALUE not in captured.err
+    assert DUMMY_ENCRYPTED_VALUE not in captured.out
 
 
 def test_new_run_command_uses_result_exit_code(tmp_path: Path) -> None:
