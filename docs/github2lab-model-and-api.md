@@ -87,7 +87,7 @@ It validates the state file against current configuration and cancels an active 
 
 ## 5. User-Facing API
 
-After review, the general ClusterHop API direction is to expose a reusable public interface. The current working integration remains available while that public interface is implemented.
+After review, ClusterHop exposes a reusable public API and CLI. The current working integration remains available during migration while users adopt these public interfaces.
 
 ### 5.1 Current Working Python Integration
 
@@ -141,11 +141,11 @@ The workflow installs `clusterhop` from a pinned commit, supplies environment co
 - name: Run GitHub-to-GitLab bridge
   uses: exacb-org/clusterhop@v1
   env:
-    GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-    GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+    SEANVAULT_PASSWORD: ${{ secrets.SEANVAULT_PASSWORD }}
   with:
     config: <config-file>
     options: <options-file>
+    secrets: <secrets-file>
 ```
 
 The wrapper should be a later, preferably separate layer that invokes the stable CLI internally. Its repository, name, release mechanism, and secret interface still require confirmation.
@@ -242,7 +242,7 @@ GitHub Actions normally supplies the three `GITHUB_*` values automatically.
 | `CLUSTERHOP_PIPELINE_STATE_FILE` | unset | Path for non-secret state used by fallback cleanup. |
 | `CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS` | `10` | Maximum duration for a cleanup request. |
 
-When GitHub Actions supplies `GITHUB_STEP_SUMMARY`, it selects the summary output file. These defaults reflect the validated prototype and remain configurable. They should later map into the general `config`, `options`, and `secrets` model.
+When GitHub Actions supplies `GITHUB_STEP_SUMMARY`, it selects the summary output file. Most values are now supplied through the public `config`, `options`, and `secrets` inputs when using the CLI. `CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES` remains environment-variable based.
 
 ## 7. Runtime Behavior
 
@@ -304,6 +304,7 @@ This general command replaces the earlier `clusterhop github2lab` proposal while
 
 - When, if ever, should the current flat `config.yaml` and `options.yaml` structures gain nested organization?
 - How should future secret backends coexist with the current Seanvault integration?
+- When should ClusterHop replace its private GitHub SSH Seanvault dependency with the normal PyPI dependency?
 - What is the release path: pinned commits, Git tags, PyPI, or a staged combination?
 - What should the future GitHub Action wrapper repository, name, and location be?
 
@@ -325,8 +326,41 @@ Unit tests also cover configuration, Git/GitLab boundaries, logs, summaries, run
 
 This validates the current GitHub-to-GitLab workflow. The public Python API, CLI, flat YAML loading, and all-jobs summary behavior are now implemented.
 
-## 12. Recommended Next Steps
+## 12. Remaining Work
 
-1. Update GitHub Actions usage to pass configuration and options files while supplying secrets and `SEANVAULT_PASSWORD` safely.
-2. Later create a reusable GitHub Action wrapper as a separate layer or repository.
-3. Later perform end-to-end testing that includes multi-job GitLab pipelines and the updated all-jobs summary behavior.
+The design direction, all-jobs summary behavior, public Python API, public CLI, flat YAML loading, and Seanvault secret loading are implemented. The remaining work is:
+
+### Seanvault PyPI Dependency Cleanup
+
+Seanvault support currently uses the private GitHub SSH dependency:
+
+```text
+seanvault @ git+ssh://git@github.com/exacb-org/seanvault.git
+```
+
+After Seanvault is published to PyPI, replace it with a normal versioned dependency, for example:
+
+```text
+seanvault>=0.1.0
+```
+
+This is a small dependency cleanup, not a redesign of the existing Seanvault integration.
+
+### Step 8: Update GitHub Actions Usage
+
+- Update the GitHub Actions workflow to invoke `clusterhop run --config ... --options ... <repo-path> --secrets ...`.
+- Supply `SEANVAULT_PASSWORD` through GitHub Actions Secrets.
+- Keep real secret values out of the repository and workflow logs.
+- Connect the implemented CLI, flat YAML, and Seanvault behavior to the real CI workflow.
+
+### Step 9: Future Reusable GitHub Action Wrapper
+
+- Later create a reusable wrapper, preferably as a separate layer or repository.
+- Have the wrapper call the stable ClusterHop CLI internally.
+- Decide its repository, name, and release mechanism separately.
+
+### Step 10: End-to-End Testing
+
+- Test the complete path: GitHub Actions → ClusterHop CLI → config/options/secrets YAML → Seanvault decryption → GitLab pipeline → GitHub summary and result.
+- Include multi-job GitLab pipeline testing and verify the all-jobs GitHub summary behavior.
+- Verify success, failure, cancellation, timeout, and secret-safety behavior.
