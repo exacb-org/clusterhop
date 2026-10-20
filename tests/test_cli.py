@@ -19,6 +19,7 @@ from clusterhop.cli import main
 
 DUMMY_TOKEN = "dummy-private-token-that-must-not-appear"
 DUMMY_ENCRYPTED_VALUE = "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;encrypted-value"
+DUMMY_PIPELINE_VALUE = "dummy-pipeline-secret-that-must-not-appear"
 
 
 def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -32,7 +33,10 @@ def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "gitlab_project_id: 8894\n"
         "github_repository: example/source-project\n"
         "github_commit_sha: 0123456789abcdef0123456789abcdef01234567\n"
-        'github_run_id: "987654"\n',
+        'github_run_id: "987654"\n'
+        "extra_pipeline_variables:\n"
+        "  CUSTOM_MODE: validation\n"
+        '  EMPTY_VALUE: ""\n',
         encoding="utf-8",
     )
     options_path.write_text(
@@ -93,6 +97,10 @@ def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None
             "github_repository": "example/source-project",
             "github_commit_sha": "0123456789abcdef0123456789abcdef01234567",
             "github_run_id": "987654",
+            "extra_pipeline_variables": {
+                "CUSTOM_MODE": "validation",
+                "EMPTY_VALUE": "",
+            },
         },
         repo_path=tmp_path,
         options={
@@ -106,6 +114,35 @@ def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None
             "gitlab_trigger_token": "dummy-trigger-token",
         },
     )
+
+
+def test_new_run_command_reports_invalid_pipeline_variables_safely(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    config_text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config_text.replace("CUSTOM_MODE: validation", f"INVALID-NAME: {DUMMY_PIPELINE_VALUE}"),
+        encoding="utf-8",
+    )
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "extra_pipeline_variables" in captured.err
+    assert DUMMY_PIPELINE_VALUE not in captured.out
+    assert DUMMY_PIPELINE_VALUE not in captured.err
 
 
 def test_new_run_command_passes_none_when_options_are_omitted(tmp_path: Path) -> None:

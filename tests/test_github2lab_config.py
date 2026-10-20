@@ -101,6 +101,70 @@ def test_loads_runtime_overrides() -> None:
     assert config.pipeline_state_file == Path("/tmp/github2lab-state.json")
 
 
+def test_loads_extra_pipeline_variables_from_json_environment_value() -> None:
+    environ = valid_environment()
+    environ["CLUSTERHOP_GITLAB_VARIABLES"] = '{"CUSTOM_MODE":"validation","EMPTY_VALUE":""}'
+
+    config = load_config_from_environment(environ)
+
+    assert config.extra_pipeline_variables == {
+        "CUSTOM_MODE": "validation",
+        "EMPTY_VALUE": "",
+    }
+
+
+def test_rejects_malformed_pipeline_variables_json_without_exposing_it() -> None:
+    environ = valid_environment()
+    unsafe_value = 'dummy-pipeline-secret-that-must-not-appear"'
+    environ["CLUSTERHOP_GITLAB_VARIABLES"] = f'{{"SECRET":"{unsafe_value}'
+
+    with pytest.raises(ConfigurationError) as captured_error:
+        load_config_from_environment(environ)
+
+    message = str(captured_error.value)
+    assert "CLUSTERHOP_GITLAB_VARIABLES" in message
+    assert unsafe_value not in message
+
+
+@pytest.mark.parametrize("encoded", ["[]", '"value"', "1", "null"])
+def test_rejects_non_object_pipeline_variables_json(encoded: str) -> None:
+    environ = valid_environment()
+    environ["CLUSTERHOP_GITLAB_VARIABLES"] = encoded
+
+    with pytest.raises(ConfigurationError, match="CLUSTERHOP_GITLAB_VARIABLES"):
+        load_config_from_environment(environ)
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        [],
+        {1: "value"},
+        {"NAME": 1},
+        {"INVALID-NAME": "value"},
+        {"1INVALID": "value"},
+        {"GITHUB_COMMIT_SHA": "replacement"},
+        {"GITHUB_REPOSITORY": "replacement"},
+        {"GITHUB_RUN_ID": "replacement"},
+    ],
+)
+def test_rejects_invalid_extra_pipeline_variable_mappings(variables: object) -> None:
+    with pytest.raises(ConfigurationError, match="extra_pipeline_variables"):
+        valid_config(extra_pipeline_variables=variables)
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    ["GITHUB_COMMIT_SHA", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"],
+)
+def test_environment_rejects_reserved_pipeline_variable_names(reserved_name: str) -> None:
+    environ = valid_environment()
+    environ["CLUSTERHOP_GITLAB_VARIABLES"] = f'{{"{reserved_name}":"replacement"}}'
+
+    with pytest.raises(ConfigurationError, match="CLUSTERHOP_GITLAB_VARIABLES"):
+        load_config_from_environment(environ)
+
+
 @pytest.mark.parametrize(
     "environment_name",
     [

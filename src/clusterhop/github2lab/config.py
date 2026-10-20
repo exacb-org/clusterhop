@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +21,15 @@ DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_PIPELINE_TIMEOUT_SECONDS = 150.0
 DEFAULT_LOG_SUMMARY_LIMIT_BYTES = 800_000
 DEFAULT_CLEANUP_TIMEOUT_SECONDS = 10.0
+GITLAB_VARIABLES_ENVIRONMENT_NAME = "CLUSTERHOP_GITLAB_VARIABLES"
+_PIPELINE_VARIABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_PIPELINE_VARIABLE_NAMES = frozenset(
+    {
+        "GITHUB_COMMIT_SHA",
+        "GITHUB_REPOSITORY",
+        "GITHUB_RUN_ID",
+    }
+)
 
 
 class ConfigurationError(ValueError):
@@ -81,21 +92,7 @@ class GitHub2LabConfig:
             secrets=(self.gitlab_token, self.gitlab_trigger_token),
         )
 
-        try:
-            variables = dict(self.extra_pipeline_variables)
-        except (TypeError, ValueError) as error:
-            raise ConfigurationError(
-                "extra_pipeline_variables must be a mapping of string keys to string values."
-            ) from error
-
-        if any(
-            not isinstance(key, str) or not isinstance(value, str)
-            for key, value in variables.items()
-        ):
-            raise ConfigurationError(
-                "extra_pipeline_variables must be a mapping of string keys to string values."
-            )
-
+        variables = validate_extra_pipeline_variables(self.extra_pipeline_variables)
         object.__setattr__(self, "extra_pipeline_variables", MappingProxyType(variables))
 
 
@@ -140,7 +137,32 @@ def load_config_from_environment(
             source,
             "CLUSTERHOP_PIPELINE_STATE_FILE",
         ),
+        extra_pipeline_variables=_pipeline_variables_environment_value(source),
     )
+
+
+def validate_extra_pipeline_variables(value: object) -> dict[str, str]:
+    """Return a validated copy of user-supplied GitLab trigger variables."""
+
+    if not isinstance(value, Mapping):
+        raise ConfigurationError(
+            "extra_pipeline_variables must be a mapping of string names to string values."
+        )
+
+    variables: dict[str, str] = {}
+    for name, variable_value in value.items():
+        if not isinstance(name, str) or not isinstance(variable_value, str):
+            raise ConfigurationError(
+                "extra_pipeline_variables must be a mapping of string names to string values."
+            )
+        if _PIPELINE_VARIABLE_NAME_PATTERN.fullmatch(name) is None:
+            raise ConfigurationError("extra_pipeline_variables contains an invalid variable name.")
+        if name in _RESERVED_PIPELINE_VARIABLE_NAMES:
+            raise ConfigurationError(
+                "extra_pipeline_variables must not override GitHub metadata variables."
+            )
+        variables[name] = variable_value
+    return variables
 
 
 def _is_non_empty_string(value: object) -> bool:
@@ -233,3 +255,25 @@ def _path_environment_value(environ: Mapping[str, str], name: str) -> Path | Non
     if not value.strip():
         raise ConfigurationError(f"Environment variable {name} must not be empty.")
     return Path(value)
+
+
+def _pipeline_variables_environment_value(environ: Mapping[str, str]) -> dict[str, str]:
+    encoded = environ.get(GITLAB_VARIABLES_ENVIRONMENT_NAME)
+    if encoded is None:
+        return {}
+
+    try:
+        loaded: object = json.loads(encoded)
+    except (json.JSONDecodeError, TypeError):
+        raise ConfigurationError(
+            f"Environment variable {GITLAB_VARIABLES_ENVIRONMENT_NAME} must contain a valid "
+            "JSON object."
+        ) from None
+
+    try:
+        return validate_extra_pipeline_variables(loaded)
+    except ConfigurationError:
+        raise ConfigurationError(
+            f"Environment variable {GITLAB_VARIABLES_ENVIRONMENT_NAME} must contain a valid "
+            "mapping of pipeline variable names to string values."
+        ) from None

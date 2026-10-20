@@ -7,13 +7,18 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from clusterhop.github2lab.config import ConfigurationError
+from clusterhop.github2lab.config import (
+    GITLAB_VARIABLES_ENVIRONMENT_NAME,
+    ConfigurationError,
+    validate_extra_pipeline_variables,
+)
 from clusterhop.github2lab.runner import run_from_environment
 
 RunStatus = Literal["success", "failed", "canceled", "skipped", "timeout", "error"]
@@ -141,6 +146,19 @@ def _copy_config_fields(source: InputObject, environment: dict[str, str]) -> Non
         if not isinstance(value, str):
             raise RunConfigurationError(f"Run configuration field {field_name} must be a string.")
         environment[environment_name] = value
+
+    pipeline_variables = _input_value(source, "extra_pipeline_variables")
+    if pipeline_variables is _MISSING:
+        return
+    try:
+        validated_variables = validate_extra_pipeline_variables(pipeline_variables)
+    except ConfigurationError as error:
+        raise RunConfigurationError(str(error)) from None
+    environment[GITLAB_VARIABLES_ENVIRONMENT_NAME] = json.dumps(
+        validated_variables,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _copy_secret_fields(secrets: InputObject | None, environment: dict[str, str]) -> None:

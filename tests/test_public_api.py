@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +71,12 @@ def test_run_adapts_gitlab_inputs_to_existing_runner() -> None:
         patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
     ):
         result = clusterhop.run(
-            config=_config(),
+            config=_config(
+                extra_pipeline_variables={
+                    "CUSTOM_MODE": "validation",
+                    "EMPTY_VALUE": "",
+                }
+            ),
             repo_path=Path("repository"),
             options=options,
             secrets=_secrets(),
@@ -90,6 +96,11 @@ def test_run_adapts_gitlab_inputs_to_existing_runner() -> None:
         "CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS": "60",
         "CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS": "8",
         "CLUSTERHOP_PIPELINE_STATE_FILE": "pipeline-state.json",
+        "CLUSTERHOP_GITLAB_VARIABLES": json.dumps(
+            {"CUSTOM_MODE": "validation", "EMPTY_VALUE": ""},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
     }
     assert backend.call_args.kwargs == {"repository_path": Path("repository")}
     assert result == RunResult(
@@ -132,6 +143,59 @@ def test_run_preserves_environment_log_summary_limit() -> None:
 
     environment = backend.call_args.args[0]
     assert environment["CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES"] == "123456"
+
+
+def test_run_omits_pipeline_variables_environment_value_when_not_configured() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        clusterhop.run(config=_config(), repo_path=".", secrets=_secrets())
+
+    assert "CLUSTERHOP_GITLAB_VARIABLES" not in backend.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "pipeline_variables",
+    [
+        [],
+        {1: "value"},
+        {"NAME": 1},
+        {"INVALID-NAME": "value"},
+        {"1INVALID": "value"},
+        {"GITHUB_COMMIT_SHA": "replacement"},
+        {"GITHUB_REPOSITORY": "replacement"},
+        {"GITHUB_RUN_ID": "replacement"},
+    ],
+)
+def test_run_rejects_invalid_extra_pipeline_variables(pipeline_variables: object) -> None:
+    with patch("clusterhop.api.run_from_environment") as backend:
+        with pytest.raises(RunConfigurationError, match="extra_pipeline_variables"):
+            clusterhop.run(
+                config=_config(extra_pipeline_variables=pipeline_variables),
+                repo_path=".",
+                secrets=_secrets(),
+            )
+
+    backend.assert_not_called()
+
+
+def test_pipeline_variable_validation_does_not_expose_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_value = "dummy-pipeline-secret-that-must-not-appear"
+
+    with pytest.raises(RunConfigurationError) as captured:
+        clusterhop.run(
+            config=_config(extra_pipeline_variables={"INVALID-NAME": secret_value}),
+            repo_path=".",
+            secrets=_secrets(),
+        )
+
+    assert secret_value not in str(captured.value)
+    output = capsys.readouterr()
+    assert secret_value not in output.out
+    assert secret_value not in output.err
 
 
 @dataclass

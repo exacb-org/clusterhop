@@ -186,10 +186,9 @@ def test_trigger_pipeline_sends_form_data_and_returns_pipeline() -> None:
 )
 def test_trigger_pipeline_rejects_reserved_variable_overrides(reserved_name: str) -> None:
     transport = FakeTransport()
-    client = GitLabClient(
-        _config(extra_pipeline_variables={reserved_name: "replacement"}),
-        transport=transport,
-    )
+    config = _config()
+    object.__setattr__(config, "extra_pipeline_variables", {reserved_name: "replacement"})
+    client = GitLabClient(config, transport=transport)
 
     with pytest.raises(ValueError, match="must not override"):
         client.trigger_pipeline("ci/abc123def456")

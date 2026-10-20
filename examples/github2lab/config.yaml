@@ -6,3 +6,6 @@ gitlab_remote_url: https://gitlab.example.com/group/project.git
 github_repository: example-org/example-repository
 github_commit_sha: 0123456789abcdef0123456789abcdef01234567
 github_run_id: "987654"
+extra_pipeline_variables:
+  ENABLE_TESTS: "true"
+  CUSTOM_MODE: benchmark
