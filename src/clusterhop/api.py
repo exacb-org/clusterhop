@@ -19,6 +19,7 @@ from clusterhop.github2lab.config import (
     ConfigurationError,
     validate_extra_pipeline_variables,
 )
+from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
 from clusterhop.github2lab.runner import run_from_environment
 
 RunStatus = Literal["success", "failed", "canceled", "skipped", "timeout", "error"]
@@ -147,13 +148,30 @@ def _copy_config_fields(source: InputObject, environment: dict[str, str]) -> Non
             raise RunConfigurationError(f"Run configuration field {field_name} must be a string.")
         environment[environment_name] = value
 
-    pipeline_variables = _input_value(source, "extra_pipeline_variables")
-    if pipeline_variables is _MISSING:
+    pipeline_variables_input = _input_value(source, "extra_pipeline_variables")
+    machine_input = _input_value(source, "jsc_machine")
+    if pipeline_variables_input is _MISSING and machine_input is _MISSING:
         return
-    try:
-        validated_variables = validate_extra_pipeline_variables(pipeline_variables)
-    except ConfigurationError as error:
-        raise RunConfigurationError(str(error)) from None
+
+    if pipeline_variables_input is _MISSING:
+        validated_variables: dict[str, str] = {}
+    else:
+        try:
+            validated_variables = validate_extra_pipeline_variables(pipeline_variables_input)
+        except ConfigurationError as error:
+            raise RunConfigurationError(str(error)) from None
+
+    if machine_input is not _MISSING:
+        try:
+            variable_name, variable_value = jsc_machine_pipeline_variable(machine_input)
+        except MachineNameError as error:
+            raise RunConfigurationError(str(error)) from None
+        if variable_name in validated_variables:
+            raise RunConfigurationError(
+                "Run configuration field jsc_machine conflicts with extra_pipeline_variables."
+            )
+        validated_variables[variable_name] = variable_value
+
     environment[GITLAB_VARIABLES_ENVIRONMENT_NAME] = json.dumps(
         validated_variables,
         separators=(",", ":"),

@@ -155,6 +155,60 @@ def test_run_omits_pipeline_variables_environment_value_when_not_configured() ->
     assert "CLUSTERHOP_GITLAB_VARIABLES" not in backend.call_args.args[0]
 
 
+def test_run_generates_machine_variable_and_preserves_custom_variables() -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        clusterhop.run(
+            config=_config(
+                jsc_machine="JuPiTeR",
+                extra_pipeline_variables={"CUSTOM_MODE": "benchmark"},
+            ),
+            repo_path=".",
+            secrets=_secrets(),
+        )
+
+    encoded = backend.call_args.args[0]["CLUSTERHOP_GITLAB_VARIABLES"]
+    assert json.loads(encoded) == {
+        "CLUSTERHOP_JUPITER_RUN": "true",
+        "CUSTOM_MODE": "benchmark",
+    }
+    assert "JSC_MACHINE" not in json.loads(encoded)
+
+
+@pytest.mark.parametrize("existing_value", ["true", "false"])
+def test_run_rejects_generated_machine_variable_collision(existing_value: str) -> None:
+    with patch("clusterhop.api.run_from_environment") as backend:
+        with pytest.raises(RunConfigurationError, match="conflicts"):
+            clusterhop.run(
+                config=_config(
+                    jsc_machine="jupiter",
+                    extra_pipeline_variables={"CLUSTERHOP_JUPITER_RUN": existing_value},
+                ),
+                repo_path=".",
+                secrets=_secrets(),
+            )
+
+    backend.assert_not_called()
+
+
+@pytest.mark.parametrize("machine_name", ["", "new-machine", "2jupiter", True, 42])
+def test_run_rejects_invalid_machine_names_safely(machine_name: object) -> None:
+    unrelated_secret = "unrelated-secret-that-must-not-appear"
+
+    with patch("clusterhop.api.run_from_environment") as backend:
+        with pytest.raises(RunConfigurationError, match="jsc_machine") as captured:
+            clusterhop.run(
+                config=_config(jsc_machine=machine_name),
+                repo_path=".",
+                secrets=_secrets(gitlab_token=unrelated_secret),
+            )
+
+    backend.assert_not_called()
+    assert unrelated_secret not in str(captured.value)
+
+
 @pytest.mark.parametrize(
     "pipeline_variables",
     [

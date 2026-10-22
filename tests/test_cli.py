@@ -34,6 +34,7 @@ def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "github_repository: example/source-project\n"
         "github_commit_sha: 0123456789abcdef0123456789abcdef01234567\n"
         'github_run_id: "987654"\n'
+        "jsc_machine: jupiter\n"
         "extra_pipeline_variables:\n"
         "  CUSTOM_MODE: validation\n"
         '  EMPTY_VALUE: ""\n',
@@ -97,6 +98,7 @@ def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None
             "github_repository": "example/source-project",
             "github_commit_sha": "0123456789abcdef0123456789abcdef01234567",
             "github_run_id": "987654",
+            "jsc_machine": "jupiter",
             "extra_pipeline_variables": {
                 "CUSTOM_MODE": "validation",
                 "EMPTY_VALUE": "",
@@ -143,6 +145,35 @@ def test_new_run_command_reports_invalid_pipeline_variables_safely(
     assert "extra_pipeline_variables" in captured.err
     assert DUMMY_PIPELINE_VALUE not in captured.out
     assert DUMMY_PIPELINE_VALUE not in captured.err
+
+
+def test_new_run_command_reports_invalid_machine_safely(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    config_text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config_text.replace("jsc_machine: jupiter", "jsc_machine: invalid-machine"),
+        encoding="utf-8",
+    )
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "jsc_machine" in captured.err
+    assert DUMMY_TOKEN not in captured.out
+    assert DUMMY_TOKEN not in captured.err
 
 
 def test_new_run_command_passes_none_when_options_are_omitted(tmp_path: Path) -> None:
