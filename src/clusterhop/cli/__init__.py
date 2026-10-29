@@ -14,13 +14,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import yaml
-from seanvault import load as seanvault_load  # type: ignore[import-untyped]
-from seanvault.errors import SeanVaultError  # type: ignore[import-untyped]
+from keyloom import KeyloomError, load as keyloom_load  # type: ignore[import-untyped]
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from clusterhop import RunConfigurationError, run as clusterhop_run
 
 _NEW_RUN_OPTIONS = ("--config", "--options", "--secrets")
-_SEANVAULT_PASSWORD_ENVIRONMENT_VARIABLE = "SEANVAULT_PASSWORD"
+_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE = "KEYLOOM_PASSWORD"
+_KEYLOOM_MARKER = "__keyloom__"
+_SEANVAULT_MARKER = "__seanvault__"
 
 
 class CliInputError(ValueError):
@@ -104,32 +106,69 @@ def _load_yaml_mapping(path: Path, label: str) -> Mapping[str, object]:
 
 
 def _load_secrets_mapping(path: Path) -> Mapping[str, object]:
-    loaded = _load_yaml_mapping(path, "secrets")
-    if not _contains_seanvault_marker(loaded):
+    loaded = _load_secrets_yaml_mapping(path)
+    if _contains_marker(loaded, _SEANVAULT_MARKER):
+        raise CliInputError(
+            "Legacy Seanvault secrets are not supported. Decrypt and re-encrypt "
+            "the secrets file with Keyloom."
+        )
+    if not _contains_marker(loaded, _KEYLOOM_MARKER):
         return loaded
 
-    password = os.environ.get(_SEANVAULT_PASSWORD_ENVIRONMENT_VARIABLE)
+    password = os.environ.get(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE)
     if not password:
         raise CliInputError(
-            "The SEANVAULT_PASSWORD environment variable is required for a "
-            "Seanvault-marked secrets file."
+            "The KEYLOOM_PASSWORD environment variable is required for a "
+            "Keyloom-marked secrets file."
         )
 
     try:
-        resolved: object = seanvault_load(path, password)
-    except (SeanVaultError, OSError, UnicodeError, ValueError, TypeError):
-        raise CliInputError("Unable to decrypt the Seanvault secrets file.") from None
+        resolved: object = keyloom_load(path=path, password=password)
+    except (KeyloomError, OSError, UnicodeError):
+        raise CliInputError("Unable to decrypt or validate the Keyloom secrets file.") from None
 
     return _validate_loaded_mapping(resolved, "decrypted secrets")
 
 
-def _contains_seanvault_marker(value: object) -> bool:
+def _load_secrets_yaml_mapping(path: Path) -> Mapping[str, object]:
+    try:
+        text = path.read_text(encoding="utf-8")
+        events = yaml.parse(text, Loader=yaml.SafeLoader)
+        if any(getattr(event, "anchor", None) is not None for event in events):
+            raise CliInputError("The secrets file must not contain YAML anchors or aliases.")
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        if root is not None:
+            _validate_unique_yaml_keys(root)
+        loaded: object = yaml.safe_load(text)
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise CliInputError("Unable to load the secrets file.") from None
+
+    return _validate_loaded_mapping(loaded, "secrets")
+
+
+def _validate_unique_yaml_keys(node: Node) -> None:
+    if isinstance(node, MappingNode):
+        seen: set[tuple[str, str]] = set()
+        for key_node, value_node in node.value:
+            if isinstance(key_node, ScalarNode):
+                identity = (key_node.tag, key_node.value)
+                if identity in seen:
+                    raise CliInputError("The secrets file must not contain duplicate mapping keys.")
+                seen.add(identity)
+            _validate_unique_yaml_keys(key_node)
+            _validate_unique_yaml_keys(value_node)
+    elif isinstance(node, SequenceNode):
+        for item in node.value:
+            _validate_unique_yaml_keys(item)
+
+
+def _contains_marker(value: object, marker: str) -> bool:
     if isinstance(value, Mapping):
-        if "__seanvault__" in value:
+        if marker in value:
             return True
-        return any(_contains_seanvault_marker(item) for item in value.values())
+        return any(_contains_marker(item, marker) for item in value.values())
     if isinstance(value, list):
-        return any(_contains_seanvault_marker(item) for item in value)
+        return any(_contains_marker(item, marker) for item in value)
     return False
 
 

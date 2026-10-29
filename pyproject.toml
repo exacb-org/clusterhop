@@ -6,6 +6,7 @@
 [project]
 name = "clusterhop"
 dynamic = ["version"]
+requires-python = ">=3.11"
 description = 'A clusterhop Parser and Emitter'
 readme = "readme.md"
 license = "Apache-2.0"
@@ -17,7 +18,7 @@ dependencies = [
   "pexpect",
   "jsonschema",
   "pyyaml",
-  "seanvault @ git+ssh://git@github.com/exacb-org/seanvault.git"
+  "keyloom==0.1.0"
 ]
 
 [project.urls]

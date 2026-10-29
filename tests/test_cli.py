@@ -13,12 +13,15 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from keyloom import KeyloomError, encrypt_value  # type: ignore[import-untyped]
 
 from clusterhop import RunConfigurationError, RunResult
 from clusterhop.cli import main
 
 DUMMY_TOKEN = "dummy-private-token-that-must-not-appear"
-DUMMY_ENCRYPTED_VALUE = "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;encrypted-value"
+DUMMY_TRIGGER_TOKEN = "dummy-trigger-token-that-must-not-appear"
+DUMMY_NESTED_SECRET = "dummy-nested-secret-that-must-not-appear"
+DUMMY_VAULT_PASSWORD = "dummy-vault-password-that-must-not-appear"
 DUMMY_PIPELINE_VALUE = "dummy-pipeline-secret-that-must-not-appear"
 
 
@@ -58,14 +61,44 @@ def _successful_result() -> RunResult:
     return RunResult(status="success", exit_code=0, summary="summary")
 
 
-def _write_seanvault_secrets(path: Path) -> None:
+@pytest.fixture(scope="module")
+def keyloom_envelopes() -> dict[str, str]:
+    return {
+        "gitlab_token": encrypt_value(
+            value=DUMMY_TOKEN,
+            password=DUMMY_VAULT_PASSWORD,
+            algorithm="argon2-v2",
+        ),
+        "gitlab_trigger_token": encrypt_value(
+            value=DUMMY_TRIGGER_TOKEN,
+            password=DUMMY_VAULT_PASSWORD,
+            algorithm="argon2-v2",
+        ),
+        "nested": encrypt_value(
+            value=DUMMY_NESTED_SECRET,
+            password=DUMMY_VAULT_PASSWORD,
+            algorithm="argon2-v2",
+        ),
+    }
+
+
+def _write_keyloom_secrets(path: Path, envelopes: dict[str, str], *, nested: bool = False) -> None:
+    nested_content = (
+        "metadata:\n"
+        "  nested:\n"
+        "    __keyloom__: secret\n"
+        f'    value: "{envelopes["nested"]}"\n'
+        if nested
+        else ""
+    )
     path.write_text(
         "gitlab_token:\n"
-        "  __seanvault__: secret\n"
-        f'  value: "{DUMMY_ENCRYPTED_VALUE}"\n'
+        "  __keyloom__: secret\n"
+        f'  value: "{envelopes["gitlab_token"]}"\n'
         "gitlab_trigger_token:\n"
-        "  __seanvault__: secret\n"
-        f'  value: "{DUMMY_ENCRYPTED_VALUE}"\n',
+        "  __keyloom__: secret\n"
+        f'  value: "{envelopes["gitlab_trigger_token"]}"\n'
+        f"{nested_content}",
         encoding="utf-8",
     )
 
@@ -196,7 +229,7 @@ def test_new_run_command_passes_none_when_options_are_omitted(tmp_path: Path) ->
     assert backend.call_args.kwargs["options"] is None
 
 
-def test_plain_secrets_do_not_require_seanvault_password(tmp_path: Path) -> None:
+def test_plain_secrets_do_not_require_keyloom_password(tmp_path: Path) -> None:
     config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
     backend = Mock(return_value=_successful_result())
     arguments = [
@@ -212,7 +245,7 @@ def test_plain_secrets_do_not_require_seanvault_password(tmp_path: Path) -> None
     with (
         patch.dict("os.environ", {}, clear=True),
         patch.object(sys, "argv", arguments),
-        patch("clusterhop.cli.seanvault_load") as load,
+        patch("clusterhop.cli.keyloom_load") as load,
         patch("clusterhop.cli.clusterhop_run", backend),
     ):
         with pytest.raises(SystemExit, match="0"):
@@ -222,14 +255,14 @@ def test_plain_secrets_do_not_require_seanvault_password(tmp_path: Path) -> None
     assert backend.call_args.kwargs["secrets"]["gitlab_token"] == DUMMY_TOKEN
 
 
-def test_seanvault_secrets_are_decrypted_and_passed_to_public_api(tmp_path: Path) -> None:
+def test_keyloom_secrets_are_decrypted_and_passed_to_public_api(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
-    _write_seanvault_secrets(secrets_path)
+    _write_keyloom_secrets(secrets_path, keyloom_envelopes, nested=True)
     backend = Mock(return_value=_successful_result())
-    resolved_secrets = {
-        "gitlab_token": DUMMY_TOKEN,
-        "gitlab_trigger_token": "dummy-decrypted-trigger-token",
-    }
     arguments = [
         "clusterhop",
         "run",
@@ -241,23 +274,37 @@ def test_seanvault_secrets_are_decrypted_and_passed_to_public_api(tmp_path: Path
     ]
 
     with (
-        patch.dict("os.environ", {"SEANVAULT_PASSWORD": "dummy-vault-password"}, clear=True),
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
-        patch("clusterhop.cli.seanvault_load", return_value=resolved_secrets) as load,
         patch("clusterhop.cli.clusterhop_run", backend),
     ):
         with pytest.raises(SystemExit, match="0"):
             main()
 
-    load.assert_called_once_with(secrets_path, "dummy-vault-password")
-    assert backend.call_args.kwargs["secrets"] == resolved_secrets
+    assert backend.call_args.kwargs["secrets"] == {
+        "gitlab_token": DUMMY_TOKEN,
+        "gitlab_trigger_token": DUMMY_TRIGGER_TOKEN,
+        "metadata": {"nested": DUMMY_NESTED_SECRET},
+    }
+    encrypted_file = secrets_path.read_text(encoding="utf-8")
+    assert "$KEYLOOM;" in encrypted_file
+    assert DUMMY_TOKEN not in encrypted_file
+    assert DUMMY_TRIGGER_TOKEN not in encrypted_file
+    captured = capsys.readouterr()
+    for sensitive_value in (DUMMY_TOKEN, DUMMY_TRIGGER_TOKEN, DUMMY_VAULT_PASSWORD):
+        assert sensitive_value not in captured.out
+        assert sensitive_value not in captured.err
 
 
-def test_seanvault_secrets_require_environment_password(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("environment", [{}, {"KEYLOOM_PASSWORD": ""}])
+def test_keyloom_secrets_require_non_empty_environment_password(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    environment: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
-    _write_seanvault_secrets(secrets_path)
+    _write_keyloom_secrets(secrets_path, keyloom_envelopes)
     arguments = [
         "clusterhop",
         "run",
@@ -268,21 +315,23 @@ def test_seanvault_secrets_require_environment_password(
         str(secrets_path),
     ]
 
-    with patch.dict("os.environ", {}, clear=True), patch.object(sys, "argv", arguments):
+    with patch.dict("os.environ", environment, clear=True), patch.object(sys, "argv", arguments):
         with pytest.raises(SystemExit, match="2"):
             main()
 
     captured = capsys.readouterr()
-    assert "SEANVAULT_PASSWORD" in captured.err
-    assert DUMMY_ENCRYPTED_VALUE not in captured.err
-    assert DUMMY_ENCRYPTED_VALUE not in captured.out
+    assert "KEYLOOM_PASSWORD" in captured.err
+    assert DUMMY_TOKEN not in captured.err
+    assert DUMMY_TOKEN not in captured.out
 
 
-def test_seanvault_decryption_failure_is_secret_safe(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_keyloom_wrong_password_is_secret_safe(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
-    _write_seanvault_secrets(secrets_path)
+    _write_keyloom_secrets(secrets_path, keyloom_envelopes)
     arguments = [
         "clusterhop",
         "run",
@@ -293,19 +342,265 @@ def test_seanvault_decryption_failure_is_secret_safe(
         str(secrets_path),
     ]
 
-    unsafe_error = f"wrong password for {DUMMY_ENCRYPTED_VALUE}"
     with (
-        patch.dict("os.environ", {"SEANVAULT_PASSWORD": "wrong-password"}, clear=True),
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": "wrong-password"}, clear=True),
         patch.object(sys, "argv", arguments),
-        patch("clusterhop.cli.seanvault_load", side_effect=ValueError(unsafe_error)),
     ):
         with pytest.raises(SystemExit, match="2"):
             main()
 
     captured = capsys.readouterr()
-    assert "Unable to decrypt the Seanvault secrets file." in captured.err
-    assert DUMMY_ENCRYPTED_VALUE not in captured.err
-    assert DUMMY_ENCRYPTED_VALUE not in captured.out
+    assert "Unable to decrypt or validate the Keyloom secrets file." in captured.err
+    for sensitive_value in (DUMMY_TOKEN, DUMMY_TRIGGER_TOKEN, DUMMY_VAULT_PASSWORD):
+        assert sensitive_value not in captured.err
+        assert sensitive_value not in captured.out
+
+
+def test_modified_keyloom_ciphertext_fails_safely(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    tampered_envelopes = dict(keyloom_envelopes)
+    encrypted_value = tampered_envelopes["gitlab_trigger_token"]
+    final_character = encrypted_value[-1]
+    replacement = "A" if final_character != "A" else "B"
+    tampered_envelopes["gitlab_trigger_token"] = f"{encrypted_value[:-1]}{replacement}"
+    _write_keyloom_secrets(secrets_path, tampered_envelopes)
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Unable to decrypt or validate the Keyloom secrets file." in captured.err
+    for sensitive_value in (DUMMY_TOKEN, DUMMY_TRIGGER_TOKEN, DUMMY_VAULT_PASSWORD):
+        assert sensitive_value not in captured.out
+        assert sensitive_value not in captured.err
+
+
+@pytest.mark.parametrize(
+    "secret_content",
+    [
+        "gitlab_token:\n  __keyloom__: secret\n  value: plaintext-token\n",
+        "gitlab_token:\n  __keyloom__: secret\n  value: __keyloom__secret__\n",
+        "gitlab_token:\n  __keyloom__: unsupported\n  value: plaintext-token\n",
+        "gitlab_token:\n  __keyloom__: secret\n",
+        "gitlab_token:\n  __keyloom__: secret\n  value: plaintext-token\n  extra: invalid\n",
+        'gitlab_token:\n  __keyloom__: secret\n  value: "$KEYLOOM;broken"\n',
+        'gitlab_token:\n  __keyloom__: secret\n  value: "$KEYLOOM;1;unknown;s=AA;n=AA;c=AA"\n',
+        'gitlab_token:\n  __keyloom__: secret\n  value: "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;old"\n',
+    ],
+)
+def test_invalid_keyloom_secrets_fail_safely(
+    tmp_path: Path,
+    secret_content: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    secrets_path.write_text(secret_content, encoding="utf-8")
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Unable to decrypt or validate the Keyloom secrets file." in captured.err
+    assert "plaintext-token" not in captured.out
+    assert "plaintext-token" not in captured.err
+    assert DUMMY_VAULT_PASSWORD not in captured.out
+    assert DUMMY_VAULT_PASSWORD not in captured.err
+
+
+def test_keyloom_error_details_are_not_forwarded(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    _write_keyloom_secrets(secrets_path, keyloom_envelopes)
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch(
+            "clusterhop.cli.keyloom_load",
+            side_effect=KeyloomError(f"unsafe details: {DUMMY_TOKEN}"),
+        ),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Unable to decrypt or validate the Keyloom secrets file." in captured.err
+    assert DUMMY_TOKEN not in captured.out
+    assert DUMMY_TOKEN not in captured.err
+
+
+def test_legacy_seanvault_wrapper_is_rejected_with_migration_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    legacy_value = "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;legacy-value"
+    secrets_path.write_text(
+        "gitlab_token:\n" "  __seanvault__: secret\n" f'  value: "{legacy_value}"\n',
+        encoding="utf-8",
+    )
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Legacy Seanvault secrets are not supported" in captured.err
+    assert "re-encrypt" in captured.err
+    assert legacy_value not in captured.out
+    assert legacy_value not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_message"),
+    [
+        (
+            "gitlab_token: first\ngitlab_token: second\n",
+            "must not contain duplicate mapping keys",
+        ),
+        (
+            "gitlab_token: &token value\ngitlab_trigger_token: *token\n",
+            "must not contain YAML anchors or aliases",
+        ),
+        ("gitlab_token: !secret value\n", "Unable to load the secrets file"),
+        (
+            "gitlab_token: first\n---\ngitlab_trigger_token: second\n",
+            "Unable to load the secrets file",
+        ),
+    ],
+)
+def test_secrets_yaml_rejects_unsafe_or_ambiguous_constructs(
+    tmp_path: Path,
+    content: str,
+    expected_message: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    secrets_path.write_text(content, encoding="utf-8")
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert expected_message in captured.err
+    assert captured.out == ""
+
+
+def test_keyloom_decrypted_root_must_be_a_mapping(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    secrets_path.write_text(
+        "- __keyloom__: secret\n" f'  value: "{keyloom_envelopes["gitlab_token"]}"\n',
+        encoding="utf-8",
+    )
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "secrets file must contain a non-empty mapping" in captured.err
+    assert DUMMY_TOKEN not in captured.out
+    assert DUMMY_TOKEN not in captured.err
+
+
+def test_missing_secrets_file_fails_safely(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path, _, _ = _write_yaml_inputs(tmp_path)
+    missing_path = tmp_path / "missing-secrets.yaml"
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(missing_path),
+    ]
+
+    with patch.object(sys, "argv", arguments):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "Unable to load the secrets file." in captured.err
+    assert str(missing_path) not in captured.err
 
 
 def test_new_run_command_uses_result_exit_code(tmp_path: Path) -> None:

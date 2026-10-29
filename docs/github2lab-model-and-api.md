@@ -141,7 +141,7 @@ The workflow installs `clusterhop` from a pinned commit, supplies environment co
 - name: Run GitHub-to-GitLab bridge
   uses: exacb-org/clusterhop@v1
   env:
-    SEANVAULT_PASSWORD: ${{ secrets.SEANVAULT_PASSWORD }}
+    KEYLOOM_PASSWORD: ${{ secrets.KEYLOOM_PASSWORD }}
   with:
     config: <config-file>
     options: <options-file>
@@ -162,7 +162,7 @@ The public API and CLI support separate configuration, options, and secrets inpu
 - `options` describes the currently supported runtime behavior: polling interval, pipeline timeout, pipeline state file, and cleanup timeout.
 - `secrets` contains secret values or references needed to authenticate with the destination.
 
-The current YAML contract is intentionally flat. Nested organization may be added later, but it is not supported by the current public format. Secrets may be supplied as plain YAML values or as explicitly marked Seanvault values.
+The current YAML contract is intentionally flat. Nested organization may be added later, but it is not supported by the current public format. Secrets may be supplied as plain YAML values or as explicitly marked and encrypted Keyloom values.
 
 Secrets must never appear in summaries, pipeline state, logs, exceptions, or other persisted non-secret output.
 
@@ -197,19 +197,32 @@ gitlab_token: <gitlab-token>
 gitlab_trigger_token: <gitlab-trigger-token>
 ```
 
-Plain secrets YAML remains supported and does not require a Seanvault password. A Seanvault-managed file uses explicit markers:
+Plain secrets YAML remains supported for compatibility and does not require a vault password. This format is not encrypted. A Keyloom-managed file uses explicit markers and placeholders before encryption:
 
 ```yaml
 # secrets.yaml
 gitlab_token:
-  __seanvault__: secret
-  value: "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;..."
+  __keyloom__: secret
+  value: "__keyloom__secret__"
 gitlab_trigger_token:
-  __seanvault__: secret
-  value: "$SEAN_VAULT;1;ARGON2ID;AES256_GCM;..."
+  __keyloom__: secret
+  value: "__keyloom__secret__"
 ```
 
-When a secrets file contains a `__seanvault__` marker, the CLI requires `SEANVAULT_PASSWORD` from the environment and resolves the file with Seanvault. In GitHub Actions, this password should be stored as a GitHub Actions secret and exposed only to the ClusterHop step. Decrypted values are held in memory and passed as an ordinary mapping to `clusterhop.run(...)`; ClusterHop does not write decrypted plaintext back to disk.
+Copy `examples/github2lab/secrets.keyloom.example.yaml` to a protected working file, then encrypt its placeholders interactively:
+
+```bash
+keyloom encrypt secrets.yaml
+keyloom check secrets.yaml
+```
+
+`keyloom encrypt` asks for a vault password and then for each GitLab token. The resulting values are genuine `$KEYLOOM;1;argon2-v2;...` envelopes; a placeholder or marked plaintext value is not valid runtime input. `keyloom check` verifies without a password that every marked value is a structurally valid encrypted envelope. To authenticate every envelope as well, use `keyloom check --verify` with a supported password source such as `--password-stdin` or `--password-file`.
+
+When a secrets file contains a `__keyloom__` marker, the ClusterHop CLI requires `KEYLOOM_PASSWORD` from the environment and calls `keyloom.load(path=..., password=...)`. The vault password encrypts the file; it is different from the GitLab API and trigger tokens stored inside it. In GitHub Actions, store `KEYLOOM_PASSWORD` as a GitHub Actions secret and expose it only to the ClusterHop step. Decrypted values are held in memory and passed as an ordinary mapping to `clusterhop.run(...)`; ClusterHop does not write decrypted plaintext back to disk.
+
+Old `__seanvault__` files are rejected explicitly. Renaming their marker or `$SEAN_VAULT` envelope does not convert the ciphertext. Existing files must be decrypted with the old tool in a trusted environment, wrapped and encrypted again with Keyloom, and verified. Avoid writing intermediate plaintext where possible. If temporary plaintext is unavoidable, use restricted temporary storage, never commit it, and securely remove it after Keyloom encryption and verification.
+
+Keyloom protects explicitly marked values at rest; it does not infer secrets from field names or authenticate the surrounding YAML. Changes to readable destination URLs and other non-secret configuration still require normal repository review. After loading, decrypted tokens and the vault password exist in Python process memory and cannot be guaranteed to be wiped, so they must never be logged, serialized, or included in errors.
 
 The CLI loads these files as mappings and passes them to `clusterhop.run(...)`. Secret values must remain out of logs, summaries, errors, and pipeline state. Step 8 will update the GitHub Actions workflow to use these files safely.
 
@@ -296,15 +309,15 @@ clusterhop run --config config.yaml --options options.yaml <repo-path> --secrets
 
 The command loads the separated inputs, calls the general `clusterhop.run(...)` API, writes `GITHUB_STEP_SUMMARY` through the existing runner when running in GitHub Actions, and returns the run result as a documented process exit code.
 
-The `--secrets` argument identifies a plain or Seanvault-marked secrets file; it does not accept secret values or the Seanvault password directly on the command line. Seanvault-marked files require `SEANVAULT_PASSWORD` in the environment.
+The `--secrets` argument identifies a plain or Keyloom-marked secrets file; it does not accept secret values or the vault password directly on the command line. Keyloom-marked files require `KEYLOOM_PASSWORD` in the environment.
 
 This general command replaces the earlier `clusterhop github2lab` proposal while preserving compatibility with the existing legacy `clusterhop run SOURCE_FILE DESTINATION_NAME` command.
 
 ## 10. Open Design Questions
 
 - When, if ever, should the current flat `config.yaml` and `options.yaml` structures gain nested organization?
-- How should future secret backends coexist with the current Seanvault integration?
-- When should ClusterHop replace its private GitHub SSH Seanvault dependency with the normal PyPI dependency?
+- Should plain, unencrypted secrets YAML remain supported indefinitely, or eventually require an explicit opt-in?
+- When should a later Keyloom release replace the currently verified and pinned `keyloom==0.1.0` dependency?
 - What is the release path: pinned commits, Git tags, PyPI, or a staged combination?
 - What should the future GitHub Action wrapper repository, name, and location be?
 
@@ -328,30 +341,15 @@ This validates the current GitHub-to-GitLab workflow. The public Python API, CLI
 
 ## 12. Remaining Work
 
-The design direction, all-jobs summary behavior, public Python API, public CLI, flat YAML loading, and Seanvault secret loading are implemented. The remaining work is:
-
-### Seanvault PyPI Dependency Cleanup
-
-Seanvault support currently uses the private GitHub SSH dependency:
-
-```text
-seanvault @ git+ssh://git@github.com/exacb-org/seanvault.git
-```
-
-After Seanvault is published to PyPI, replace it with a normal versioned dependency, for example:
-
-```text
-seanvault>=0.1.0
-```
-
-This is a small dependency cleanup, not a redesign of the existing Seanvault integration.
+The design direction, all-jobs summary behavior, public Python API, public CLI, flat YAML loading, and Keyloom secret loading are implemented. The remaining work is:
 
 ### Step 8: Update GitHub Actions Usage
 
 - Update the GitHub Actions workflow to invoke `clusterhop run --config ... --options ... <repo-path> --secrets ...`.
-- Supply `SEANVAULT_PASSWORD` through GitHub Actions Secrets.
+- Supply `KEYLOOM_PASSWORD` through GitHub Actions Secrets.
 - Keep real secret values out of the repository and workflow logs.
-- Connect the implemented CLI, flat YAML, and Seanvault behavior to the real CI workflow.
+- Connect the implemented CLI, flat YAML, and Keyloom behavior to the real CI workflow.
+- Consider adding `keyloom check` as a pre-commit or CI safeguard for marked secret files.
 
 ### Step 9: Future Reusable GitHub Action Wrapper
 
@@ -361,6 +359,6 @@ This is a small dependency cleanup, not a redesign of the existing Seanvault int
 
 ### Step 10: End-to-End Testing
 
-- Test the complete path: GitHub Actions → ClusterHop CLI → config/options/secrets YAML → Seanvault decryption → GitLab pipeline → GitHub summary and result.
+- Test the complete path: GitHub Actions → ClusterHop CLI → config/options/secrets YAML → Keyloom decryption → GitLab pipeline → GitHub summary and result.
 - Include multi-job GitLab pipeline testing and verify the all-jobs GitHub summary behavior.
 - Verify success, failure, cancellation, timeout, and secret-safety behavior.
