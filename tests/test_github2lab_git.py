@@ -89,6 +89,19 @@ def _success(stdout: str = "") -> GitCommandResult:
     return GitCommandResult(return_code=0, stdout=stdout, stderr="")
 
 
+def test_subprocess_executor_removes_keyloom_password_from_git_environment() -> None:
+    executor = SubprocessGitCommandExecutor()
+    completed = subprocess.CompletedProcess(["git"], 0, stdout="", stderr="")
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": "vault-password"}, clear=True),
+        patch("subprocess.run", return_value=completed) as run,
+    ):
+        executor.run(("git", "status"), cwd=Path("/workspace"), environment={})
+
+    assert "KEYLOOM_PASSWORD" not in run.call_args.kwargs["env"]
+
+
 @pytest.mark.parametrize(
     "commit_sha",
     [

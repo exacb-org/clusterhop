@@ -105,7 +105,10 @@ def _load_yaml_mapping(path: Path, label: str) -> Mapping[str, object]:
     return _validate_loaded_mapping(loaded, label)
 
 
-def _load_secrets_mapping(path: Path) -> Mapping[str, object]:
+def _load_secrets_mapping(
+    path: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Mapping[str, object]:
     loaded = _load_secrets_yaml_mapping(path)
     if _contains_marker(loaded, _SEANVAULT_MARKER):
         raise CliInputError(
@@ -115,7 +118,8 @@ def _load_secrets_mapping(path: Path) -> Mapping[str, object]:
     if not _contains_marker(loaded, _KEYLOOM_MARKER):
         return loaded
 
-    password = os.environ.get(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE)
+    source = os.environ if environ is None else environ
+    password = source.get(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE)
     if not password:
         raise CliInputError(
             "The KEYLOOM_PASSWORD environment variable is required for a "

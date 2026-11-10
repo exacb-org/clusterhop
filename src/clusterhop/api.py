@@ -20,6 +20,10 @@ from clusterhop.github2lab.config import (
     validate_extra_pipeline_variables,
 )
 from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
+from clusterhop.github2lab.project import (
+    GitLabProjectResolutionError,
+    resolve_gitlab_project,
+)
 from clusterhop.github2lab.runner import run_from_environment
 
 RunStatus = Literal["success", "failed", "canceled", "skipped", "timeout", "error"]
@@ -81,10 +85,7 @@ def run(
             "The requested destination type is not supported by this ClusterHop version."
         )
 
-    environment = _github_metadata_from_environment()
-    _copy_config_fields(config, environment)
-    _copy_secret_fields(secrets, environment)
-    _copy_option_fields(options, environment)
+    environment = _prepare_gitlab_environment(config, options, secrets)
 
     try:
         internal_result = run_from_environment(
@@ -100,6 +101,64 @@ def run(
         summary=internal_result.summary,
         error_message=internal_result.error_message,
     )
+
+
+def _prepare_gitlab_environment(
+    config: InputObject,
+    options: InputObject | None,
+    secrets: InputObject | None,
+    *,
+    project_resolution_timeout_seconds: float | None = None,
+) -> dict[str, str]:
+    """Adapt public GitLab inputs into the existing validated environment contract."""
+
+    environment = _github_metadata_from_environment()
+    _copy_config_fields(config, environment)
+    _copy_secret_fields(secrets, environment)
+    _copy_option_fields(options, environment)
+    _resolve_project_if_remote_is_missing(
+        environment,
+        request_timeout_seconds=project_resolution_timeout_seconds,
+    )
+    return environment
+
+
+def _resolve_project_if_remote_is_missing(
+    environment: dict[str, str],
+    *,
+    request_timeout_seconds: float | None = None,
+) -> None:
+    if "GITLAB_REMOTE_URL" in environment:
+        return
+
+    project_identifier = environment.get("GITLAB_PROJECT_PATH") or environment.get(
+        "GITLAB_PROJECT_ID"
+    )
+    gitlab_url = environment.get("GITLAB_URL")
+    gitlab_token = environment.get("GITLAB_TOKEN")
+    if project_identifier is None or gitlab_url is None or gitlab_token is None:
+        return
+
+    try:
+        if request_timeout_seconds is None:
+            project = resolve_gitlab_project(
+                gitlab_url=gitlab_url,
+                project_identifier=project_identifier,
+                gitlab_token=gitlab_token,
+            )
+        else:
+            project = resolve_gitlab_project(
+                gitlab_url=gitlab_url,
+                project_identifier=project_identifier,
+                gitlab_token=gitlab_token,
+                request_timeout_seconds=request_timeout_seconds,
+            )
+    except GitLabProjectResolutionError as error:
+        raise RunConfigurationError(str(error)) from None
+
+    environment["GITLAB_REMOTE_URL"] = project.http_url_to_repo
+    environment["GITLAB_PROJECT_ID"] = str(project.id)
+    environment.pop("GITLAB_PROJECT_PATH", None)
 
 
 def _destination_type(config: InputObject) -> str:

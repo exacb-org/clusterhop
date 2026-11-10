@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-from keyloom import KeyloomError, encrypt_value  # type: ignore[import-untyped]
+from keyloom import KeyloomError, encrypt_value, load as keyloom_load  # type: ignore[import-untyped]
 
 from clusterhop import RunConfigurationError, RunResult
 from clusterhop.cli import main
@@ -277,6 +277,7 @@ def test_keyloom_secrets_are_decrypted_and_passed_to_public_api(
         patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
         patch("clusterhop.cli.clusterhop_run", backend),
+        patch("clusterhop.cli.keyloom_load", wraps=keyloom_load) as decrypt,
     ):
         with pytest.raises(SystemExit, match="0"):
             main()
@@ -286,6 +287,7 @@ def test_keyloom_secrets_are_decrypted_and_passed_to_public_api(
         "gitlab_trigger_token": DUMMY_TRIGGER_TOKEN,
         "metadata": {"nested": DUMMY_NESTED_SECRET},
     }
+    decrypt.assert_called_once_with(path=secrets_path, password=DUMMY_VAULT_PASSWORD)
     encrypted_file = secrets_path.read_text(encoding="utf-8")
     assert "$KEYLOOM;" in encrypted_file
     assert DUMMY_TOKEN not in encrypted_file
@@ -342,9 +344,11 @@ def test_keyloom_wrong_password_is_secret_safe(
         str(secrets_path),
     ]
 
+    backend = Mock()
     with (
         patch.dict("os.environ", {"KEYLOOM_PASSWORD": "wrong-password"}, clear=True),
         patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.clusterhop_run", backend),
     ):
         with pytest.raises(SystemExit, match="2"):
             main()
@@ -354,6 +358,7 @@ def test_keyloom_wrong_password_is_secret_safe(
     for sensitive_value in (DUMMY_TOKEN, DUMMY_TRIGGER_TOKEN, DUMMY_VAULT_PASSWORD):
         assert sensitive_value not in captured.err
         assert sensitive_value not in captured.out
+    backend.assert_not_called()
 
 
 def test_modified_keyloom_ciphertext_fails_safely(
@@ -378,9 +383,11 @@ def test_modified_keyloom_ciphertext_fails_safely(
         str(secrets_path),
     ]
 
+    backend = Mock()
     with (
         patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.clusterhop_run", backend),
     ):
         with pytest.raises(SystemExit, match="2"):
             main()
@@ -390,6 +397,50 @@ def test_modified_keyloom_ciphertext_fails_safely(
     for sensitive_value in (DUMMY_TOKEN, DUMMY_TRIGGER_TOKEN, DUMMY_VAULT_PASSWORD):
         assert sensitive_value not in captured.out
         assert sensitive_value not in captured.err
+    backend.assert_not_called()
+
+
+def test_keyloom_decrypted_non_string_token_fails_before_runner(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    numeric_token = encrypt_value(
+        value=123,
+        password=DUMMY_VAULT_PASSWORD,
+        algorithm="argon2-v2",
+    )
+    _write_keyloom_secrets(
+        secrets_path,
+        {
+            **keyloom_envelopes,
+            "gitlab_token": numeric_token,
+        },
+    )
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch("clusterhop.api.run_from_environment") as runner,
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    runner.assert_not_called()
+    captured = capsys.readouterr()
+    assert "gitlab_token" in captured.err
+    assert DUMMY_VAULT_PASSWORD not in captured.out
+    assert DUMMY_VAULT_PASSWORD not in captured.err
 
 
 @pytest.mark.parametrize(

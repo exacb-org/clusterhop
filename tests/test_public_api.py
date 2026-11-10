@@ -17,6 +17,7 @@ import pytest
 
 import clusterhop
 from clusterhop import RunConfigurationError, RunResult, UnsupportedDestinationError
+from clusterhop.github2lab.project import ResolvedGitLabProject
 
 DUMMY_TOKEN = "dummy-private-token-that-must-not-appear"
 DUMMY_TRIGGER_TOKEN = "dummy-trigger-token-that-must-not-appear"
@@ -107,6 +108,50 @@ def test_run_adapts_gitlab_inputs_to_existing_runner() -> None:
         status="success",
         exit_code=0,
         summary="## GitLab CI Result\n",
+    )
+
+
+def test_run_resolves_project_when_remote_url_is_omitted() -> None:
+    config = _config(
+        gitlab_remote_url=None,
+        gitlab_project_id=None,
+        gitlab_project_path="group/nested/project",
+    )
+    resolver_result = ResolvedGitLabProject(
+        id=8894,
+        path_with_namespace="group/nested/project",
+        http_url_to_repo="https://gitlab.example.test/group/nested/project.git",
+    )
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("clusterhop.api.resolve_gitlab_project", return_value=resolver_result) as resolver,
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+
+    resolver.assert_called_once_with(
+        gitlab_url="https://gitlab.example.test",
+        project_identifier="group/nested/project",
+        gitlab_token=DUMMY_TOKEN,
+    )
+    environment = backend.call_args.args[0]
+    assert environment["GITLAB_PROJECT_ID"] == "8894"
+    assert "GITLAB_PROJECT_PATH" not in environment
+    assert environment["GITLAB_REMOTE_URL"] == resolver_result.http_url_to_repo
+
+
+def test_explicit_remote_url_preserves_existing_behavior_without_lookup() -> None:
+    with (
+        patch("clusterhop.api.resolve_gitlab_project") as resolver,
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        clusterhop.run(config=_config(), repo_path=".", secrets=_secrets())
+
+    resolver.assert_not_called()
+    assert (
+        backend.call_args.args[0]["GITLAB_REMOTE_URL"]
+        == "git@gitlab.example.test:group/project.git"
     )
 
 

@@ -133,22 +133,23 @@ The CLI calls the same general run API. It replaces the earlier `clusterhop gith
 
 The workflow installs `clusterhop` from a pinned commit, supplies environment configuration and GitHub secrets, calls `run_from_environment(repository_path=".")`, and returns `result.exit_code`. A cancellation fallback step can use persisted pipeline state.
 
-### 5.5 Future GitHub Action Wrapper
+### 5.5 Reusable GitHub Action Wrapper
 
-**Status:** Future; not implemented.
+**Status:** Implemented locally; review and end-to-end validation are required before tagging or release.
 
 ```yaml
 - name: Run GitHub-to-GitLab bridge
-  uses: exacb-org/clusterhop@v1
+  uses: exacb-org/clusterhop@<full-commit-sha>
   env:
     KEYLOOM_PASSWORD: ${{ secrets.KEYLOOM_PASSWORD }}
   with:
-    config: <config-file>
-    options: <options-file>
-    secrets: <secrets-file>
+    gitlab-url: https://gitlab.example.com
+    gitlab-project: group/project
+    jsc-machine: jureca # Optional.
+    secrets-file: .github/clusterhop/secrets.keyloom.yaml
 ```
 
-The wrapper should be a later, preferably separate layer that invokes the stable CLI internally. Its repository, name, release mechanism, and secret interface still require confirmation.
+The root Docker Action invokes the stable CLI internally. It resolves authoritative project metadata from the supplied GitLab `path_with_namespace`, reuses Keyloom decryption in memory, and stores only secret-free lifecycle state for its post-entrypoint fallback. Cancellation is bounded best effort and cannot be guaranteed after runner loss or forced termination. No `v1` tag exists yet; integration testing should use an exact commit SHA.
 
 `python -m clusterhop.github2lab` is not planned as a public API. The existing fallback module remains an internal workflow utility where needed.
 
@@ -319,7 +320,7 @@ This general command replaces the earlier `clusterhop github2lab` proposal while
 - Should plain, unencrypted secrets YAML remain supported indefinitely, or eventually require an explicit opt-in?
 - When should a later Keyloom release replace the currently verified and pinned `keyloom==0.1.0` dependency?
 - What is the release path: pinned commits, Git tags, PyPI, or a staged combination?
-- What should the future GitHub Action wrapper repository, name, and location be?
+- When should the reviewed reusable Action receive its first immutable release and moving major tag?
 
 The package name remains `clusterhop`. The questions above require maintainer review before publishing a stable interface.
 
@@ -345,17 +346,17 @@ The design direction, all-jobs summary behavior, public Python API, public CLI, 
 
 ### Step 8: Update GitHub Actions Usage
 
-- Update the GitHub Actions workflow to invoke `clusterhop run --config ... --options ... <repo-path> --secrets ...`.
+- Update the `github2lab-test` workflow to use the reusable Action pinned to an exact commit SHA.
 - Supply `KEYLOOM_PASSWORD` through GitHub Actions Secrets.
 - Keep real secret values out of the repository and workflow logs.
-- Connect the implemented CLI, flat YAML, and Keyloom behavior to the real CI workflow.
+- Confirm the Action connects the implemented CLI, project resolution, Keyloom behavior, and post-run fallback to the real CI workflow.
 - Consider adding `keyloom check` as a pre-commit or CI safeguard for marked secret files.
 
-### Step 9: Future Reusable GitHub Action Wrapper
+### Step 9: Validate and Release the Reusable GitHub Action
 
-- Later create a reusable wrapper, preferably as a separate layer or repository.
-- Have the wrapper call the stable ClusterHop CLI internally.
-- Decide its repository, name, and release mechanism separately.
+- Review the locally implemented Docker Action and its project-resolution boundary.
+- Validate it from `github2lab-test` using an exact ClusterHop commit SHA.
+- Create release tags only after integration, cancellation, and secret-safety tests pass.
 
 ### Step 10: End-to-End Testing
 

@@ -1,0 +1,8 @@
+.git
+.pytest_cache
+.mypy_cache
+__pycache__
+*.pyc
+build
+dist
+.coverage

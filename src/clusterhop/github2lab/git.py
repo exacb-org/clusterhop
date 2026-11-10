@@ -22,6 +22,7 @@ from clusterhop.github2lab.config import GitHub2LabConfig
 DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS = 120.0
 _COMMIT_SHA_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _GITLAB_TOKEN_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_TOKEN"
+_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE = "KEYLOOM_PASSWORD"
 _HTTP_CREDENTIAL_HELPER = (
     "!f() { "
     'if test "$1" = get; then '
@@ -91,6 +92,7 @@ class SubprocessGitCommandExecutor:
 
         process_environment = os.environ.copy()
         process_environment.update(environment)
+        process_environment.pop(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE, None)
 
         try:
             completed = subprocess.run(

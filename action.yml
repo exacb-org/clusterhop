@@ -1,0 +1,33 @@
+name: ClusterHop
+description: Run a GitHub commit through a GitLab CI/CD pipeline with ClusterHop.
+author: exacb-org
+
+inputs:
+  gitlab-url:
+    description: Base URL of the target GitLab instance.
+    required: true
+  gitlab-project:
+    description: GitLab project path_with_namespace.
+    required: true
+  jsc-machine:
+    description: Optional JSC machine name used to generate the ClusterHop pipeline variable.
+    required: false
+    default: ""
+  secrets-file:
+    description: Relative path to the Keyloom-encrypted GitLab credentials file.
+    required: true
+
+runs:
+  using: docker
+  image: Dockerfile
+  entrypoint: /usr/local/bin/clusterhop-action-entrypoint
+  post-entrypoint: /usr/local/bin/clusterhop-action-cleanup
+  args:
+    - ${{ inputs.gitlab-url }}
+    - ${{ inputs.gitlab-project }}
+    - ${{ inputs.jsc-machine }}
+    - ${{ inputs.secrets-file }}
+
+branding:
+  icon: activity
+  color: blue
