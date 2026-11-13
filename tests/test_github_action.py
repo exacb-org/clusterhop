@@ -231,6 +231,71 @@ def test_secrets_file_must_stay_inside_repository(tmp_path: Path, secrets_file: 
         )
 
 
+def test_nonexistent_relative_secrets_file_is_rejected(tmp_path: Path) -> None:
+    environ = _environment(tmp_path)
+
+    with pytest.raises(
+        GitHubActionError,
+        match="Action input secrets-file must identify a file inside the repository",
+    ) as captured:
+        prepare_action_run(
+            gitlab_url="https://gitlab.example.test",
+            gitlab_project="group/project",
+            jsc_machine="",
+            secrets_file=".github/clusterhop/missing-secrets.yaml",
+            environ=environ,
+        )
+
+    assert "missing-secrets.yaml" not in str(captured.value)
+
+
+def test_malformed_keyloom_yaml_is_rejected_with_sanitized_error(tmp_path: Path) -> None:
+    environ = _environment(tmp_path)
+    path = Path(environ["GITHUB_WORKSPACE"]) / "malformed-secrets.yaml"
+    sensitive_content = "dummy-malformed-secret-that-must-not-appear"
+    path.write_text(
+        f'gitlab_token: ["{sensitive_content}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        GitHubActionError,
+        match="Unable to validate the Keyloom secrets file",
+    ) as captured:
+        prepare_action_run(
+            gitlab_url="https://gitlab.example.test",
+            gitlab_project="group/project",
+            jsc_machine="",
+            secrets_file=path.name,
+            environ=environ,
+        )
+
+    assert sensitive_content not in str(captured.value)
+
+
+def test_missing_required_encrypted_credential_is_rejected(tmp_path: Path) -> None:
+    environ = _environment(tmp_path)
+    path = Path(environ["GITHUB_WORKSPACE"]) / "missing-credential.yaml"
+    path.write_text(
+        "gitlab_token:\n"
+        "  __keyloom__: secret\n"
+        f'  value: "{_encrypted_value(DUMMY_TOKEN)}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        GitHubActionError,
+        match="requires a Keyloom-encrypted secrets file",
+    ):
+        prepare_action_run(
+            gitlab_url="https://gitlab.example.test",
+            gitlab_project="group/project",
+            jsc_machine="",
+            secrets_file=path.name,
+            environ=environ,
+        )
+
+
 def test_action_rejects_plaintext_secrets_without_changing_cli_compatibility(
     tmp_path: Path,
 ) -> None:
