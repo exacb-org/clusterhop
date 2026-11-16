@@ -171,7 +171,7 @@ class GitLabBranchPusher:
         self._executor = executor if executor is not None else SubprocessGitCommandExecutor()
         self._repository_path = (
             Path.cwd() if repository_path is None else Path(repository_path).expanduser()
-        )
+        ).resolve()
 
     def __repr__(self) -> str:
         """Return a representation that cannot expose configuration secrets."""
@@ -191,7 +191,7 @@ class GitLabBranchPusher:
         head_result = self._run_checked(
             ("git", "rev-parse", "--verify", "HEAD^{commit}"),
             operation="verify the current Git commit",
-            environment=_base_git_environment(),
+            environment=_base_git_environment(self._repository_path),
         )
         current_commit = head_result.stdout.strip()
         if not _COMMIT_SHA_PATTERN.fullmatch(current_commit):
@@ -209,14 +209,18 @@ class GitLabBranchPusher:
         effective_remote_result = self._run_checked(
             ("git", "ls-remote", "--get-url", "--", validated_remote.url),
             operation="verify the effective GitLab remote URL",
-            environment=_base_git_environment(),
+            environment=_base_git_environment(self._repository_path),
         )
         effective_remote = effective_remote_result.stdout.strip()
         if effective_remote != validated_remote.url:
             raise GitPushError("Git configuration rewrote the GitLab remote URL.")
 
         remote_ref = f"refs/heads/{branch_name}"
-        push_environment = _push_environment(self._config, validated_remote)
+        push_environment = _push_environment(
+            self._config,
+            validated_remote,
+            self._repository_path,
+        )
         self._run_checked(
             (
                 "git",
@@ -264,15 +268,21 @@ def create_ci_branch_name(github_commit_sha: str) -> str:
     return f"ci/{github_commit_sha}"
 
 
-def _base_git_environment() -> dict[str, str]:
-    return {"GIT_TERMINAL_PROMPT": "0"}
+def _base_git_environment(repository_path: Path) -> dict[str, str]:
+    return {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": str(repository_path),
+    }
 
 
 def _push_environment(
     config: GitHub2LabConfig,
     remote: ValidatedGitRemote,
+    repository_path: Path,
 ) -> dict[str, str]:
-    environment = _base_git_environment()
+    environment = _base_git_environment(repository_path)
     if remote.kind != "https":
         return environment
 
@@ -283,7 +293,7 @@ def _push_environment(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_COUNT": "9",
+            "GIT_CONFIG_COUNT": "10",
             "GIT_CONFIG_KEY_0": "credential.helper",
             "GIT_CONFIG_VALUE_0": "",
             "GIT_CONFIG_KEY_1": "credential.helper",
@@ -302,6 +312,8 @@ def _push_environment(
             "GIT_CONFIG_VALUE_7": "always",
             "GIT_CONFIG_KEY_8": "core.hooksPath",
             "GIT_CONFIG_VALUE_8": os.devnull,
+            "GIT_CONFIG_KEY_9": "safe.directory",
+            "GIT_CONFIG_VALUE_9": str(repository_path),
             _GITLAB_TOKEN_ENVIRONMENT_VARIABLE: config.gitlab_token,
             _GITLAB_HOST_ENVIRONMENT_VARIABLE: remote.https_origin.credential_host,
             _GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE: (

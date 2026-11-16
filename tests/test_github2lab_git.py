@@ -70,6 +70,27 @@ class FakeGitCommandExecutor:
         return outcome
 
 
+class InterceptingPushExecutor:
+    """Run local Git inspection commands while preventing a real push."""
+
+    def __init__(self) -> None:
+        self._executor = SubprocessGitCommandExecutor()
+        self.commands: list[RecordedCommand] = []
+
+    def run(
+        self,
+        arguments: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+    ) -> GitCommandResult:
+        command = RecordedCommand(tuple(arguments), cwd, dict(environment))
+        self.commands.append(command)
+        if len(arguments) > 1 and arguments[1] == "push":
+            return _success()
+        return self._executor.run(arguments, cwd=cwd, environment=environment)
+
+
 def _config(**overrides: object) -> GitHub2LabConfig:
     values: dict[str, object] = {
         "gitlab_token": DUMMY_GITLAB_TOKEN,
@@ -104,6 +125,43 @@ def _https_push_environment(remote_url: str) -> dict[str, str]:
 
 def _initialize_repository(path: Path) -> None:
     subprocess.run(("git", "init", "--quiet", str(path)), check=True)
+
+
+def _initialize_committed_repository(path: Path) -> str:
+    _initialize_repository(path)
+    (path / "tracked.txt").write_text("test\n", encoding="utf-8")
+    subprocess.run(("git", "add", "tracked.txt"), cwd=path, check=True)
+    subprocess.run(
+        (
+            "git",
+            "-c",
+            "user.name=ClusterHop Test",
+            "-c",
+            "user.email=clusterhop@example.test",
+            "commit",
+            "--quiet",
+            "-m",
+            "test commit",
+        ),
+        cwd=path,
+        check=True,
+    )
+    return subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=path,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+def _base_environment(repository_path: Path) -> dict[str, str]:
+    return {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": str(repository_path.resolve()),
+    }
 
 
 def test_subprocess_executor_removes_inherited_secrets_from_git_environment() -> None:
@@ -198,12 +256,12 @@ def test_push_current_commit_uses_expected_refspec_and_ci_skip() -> None:
         RecordedCommand(
             arguments=("git", "rev-parse", "--verify", "HEAD^{commit}"),
             cwd=repository_path,
-            environment={"GIT_TERMINAL_PROMPT": "0"},
+            environment=_base_environment(repository_path),
         ),
         RecordedCommand(
             arguments=("git", "ls-remote", "--get-url", "--", GITLAB_REMOTE_URL),
             cwd=repository_path,
-            environment={"GIT_TERMINAL_PROMPT": "0"},
+            environment=_base_environment(repository_path),
         ),
         RecordedCommand(
             arguments=(
@@ -215,7 +273,7 @@ def test_push_current_commit_uses_expected_refspec_and_ci_skip() -> None:
                 f"HEAD:refs/heads/ci/{GITHUB_COMMIT_SHA}",
             ),
             cwd=repository_path,
-            environment={"GIT_TERMINAL_PROMPT": "0"},
+            environment=_base_environment(repository_path),
         ),
     ]
 
@@ -238,7 +296,7 @@ def test_https_push_uses_ephemeral_environment_credentials() -> None:
     assert push_command.environment["GIT_TERMINAL_PROMPT"] == "0"
     assert push_command.environment["GIT_CONFIG_NOSYSTEM"] == "1"
     assert push_command.environment["GIT_CONFIG_GLOBAL"] == os.devnull
-    assert push_command.environment["GIT_CONFIG_COUNT"] == "9"
+    assert push_command.environment["GIT_CONFIG_COUNT"] == "10"
     assert push_command.environment["GIT_CONFIG_KEY_0"] == "credential.helper"
     assert push_command.environment["GIT_CONFIG_VALUE_0"] == ""
     assert push_command.environment["GIT_CONFIG_KEY_1"] == "credential.helper"
@@ -258,6 +316,11 @@ def test_https_push_uses_ephemeral_environment_credentials() -> None:
     assert push_command.environment["GIT_CONFIG_VALUE_7"] == "always"
     assert push_command.environment["GIT_CONFIG_KEY_8"] == "core.hooksPath"
     assert push_command.environment["GIT_CONFIG_VALUE_8"] == os.devnull
+    assert push_command.environment["GIT_CONFIG_KEY_9"] == "safe.directory"
+    assert push_command.environment["GIT_CONFIG_VALUE_9"] == str(
+        Path("/workspace/source").resolve()
+    )
+    assert push_command.environment["GIT_CONFIG_VALUE_9"] != "*"
     assert push_command.environment["CLUSTERHOP_GITLAB_GIT_TOKEN"] == DUMMY_GITLAB_TOKEN
     assert push_command.environment["CLUSTERHOP_GITLAB_GIT_HOST"] == "gitlab.example.test"
     assert all(DUMMY_GITLAB_TOKEN not in argument for argument in push_command.arguments)
@@ -401,6 +464,74 @@ def test_real_git_configured_pre_push_hook_is_disabled(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_real_git_rejects_simulated_different_owner_without_safe_directory(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _initialize_committed_repository(repository)
+    executor = SubprocessGitCommandExecutor()
+
+    with patch.dict(
+        "os.environ",
+        {**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+        clear=True,
+    ):
+        result = executor.run(
+            ("git", "rev-parse", "--verify", "HEAD^{commit}"),
+            cwd=repository,
+            environment={
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+            },
+        )
+
+    assert result.return_code != 0
+    assert "dubious ownership" in result.stderr
+
+
+def test_real_git_pusher_trusts_only_selected_repository_under_different_ownership(
+    tmp_path: Path,
+) -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    commit_sha = _initialize_committed_repository(repository)
+    executor = InterceptingPushExecutor()
+    pusher = GitLabBranchPusher(
+        _config(gitlab_remote_url=remote_url, github_commit_sha=commit_sha),
+        executor=executor,
+        repository_path=repository,
+    )
+
+    with patch.dict(
+        "os.environ",
+        {**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+        clear=True,
+    ):
+        branch_name = pusher.push_current_commit()
+
+    assert branch_name == f"ci/{commit_sha}"
+    assert len(executor.commands) == 3
+    trusted_path = str(repository.resolve())
+    for command in executor.commands:
+        values = tuple(
+            value
+            for name, value in command.environment.items()
+            if name.startswith("GIT_CONFIG_VALUE_")
+        )
+        assert trusted_path in values
+        assert "*" not in values
+    push_command = executor.commands[2]
+    assert push_command.environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert push_command.environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert push_command.environment["GIT_CONFIG_KEY_9"] == "safe.directory"
+    assert push_command.environment["GIT_CONFIG_VALUE_9"] == trusted_path
+    assert all(DUMMY_GITLAB_TOKEN not in argument for argument in push_command.arguments)
+    assert all(DUMMY_TRIGGER_TOKEN not in argument for argument in push_command.arguments)
+
+
 def test_unexpected_git_url_rewrite_is_rejected_before_credentials_or_push() -> None:
     remote_url = "https://gitlab.example.test/group/project.git"
     rewritten_url = "https://other.example.test/group/project.git"
@@ -423,32 +554,7 @@ def test_real_git_url_rewrite_is_rejected_before_authenticated_push(tmp_path: Pa
     remote_url = "https://gitlab.example.test/group/project.git"
     repository = tmp_path / "repository"
     repository.mkdir()
-    _initialize_repository(repository)
-    tracked_file = repository / "tracked.txt"
-    tracked_file.write_text("test\n", encoding="utf-8")
-    subprocess.run(("git", "add", "tracked.txt"), cwd=repository, check=True)
-    subprocess.run(
-        (
-            "git",
-            "-c",
-            "user.name=ClusterHop Test",
-            "-c",
-            "user.email=clusterhop@example.test",
-            "commit",
-            "--quiet",
-            "-m",
-            "test commit",
-        ),
-        cwd=repository,
-        check=True,
-    )
-    commit_sha = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        cwd=repository,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
+    commit_sha = _initialize_committed_repository(repository)
     subprocess.run(
         (
             "git",
