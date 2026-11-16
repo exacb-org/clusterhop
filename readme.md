@@ -9,31 +9,37 @@ ClusterHop is CI/CD connector for HPC clusters between GitLab and HPC Clusters. 
 seamlessly submit jobs from GitLab CI/CD pipelines to HPC clusters, monitor their status, and
 retrieve results back to GitLab.
 
-## Reusable GitHub Action
+## GitHub-to-GitLab Integration
 
-The repository contains a Docker-based Action that wraps the existing ClusterHop CLI. Until a
-reviewed release tag exists, test it by pinning an exact commit SHA rather than using `@v1`:
+ClusterHop also provides a reusable GitHub Action, Python API, and CLI to connect GitHub workflows
+with GitLab CI/CD pipelines.
+
+When code is pushed to GitHub, ClusterHop securely transfers the corresponding commit to GitLab,
+triggers the configured pipeline, monitors its execution, and reports results back to GitHub
+Actions.
+
+## Reusable GitHub Action
 
 ```yaml
 steps:
-  - name: Checkout repository
-    uses: actions/checkout@v6
+  - uses: actions/checkout@v6
     with:
       fetch-depth: 0
-
   - name: Run ClusterHop
     uses: exacb-org/clusterhop@<full-commit-sha>
     with:
       gitlab-url: https://gitlab.example.com
       gitlab-project: group/project
-      jsc-machine: jureca # Optional.
+      jsc-machine: jureca # Optional
       secrets-file: .github/clusterhop/secrets.keyloom.yaml
     env:
       KEYLOOM_PASSWORD: ${{ secrets.KEYLOOM_PASSWORD }}
 ```
 
-`gitlab-project` is the GitLab `path_with_namespace`. The secrets file must be a relative path
-inside the checked-out repository and contain the existing Keyloom-encrypted `gitlab_token` and
-`gitlab_trigger_token` fields. The Action resolves authoritative project metadata through GitLab,
-executes the public `clusterhop run` CLI, and performs bounded best-effort fallback cancellation
-from its Docker post-entrypoint.
+The Action uses Keyloom-encrypted GitLab credentials and supports optional target-machine selection.
+Pin the Action to a full commit SHA until a reviewed release tag is available.
+
+## Documentation
+
+For the complete workflow, architecture, configuration, monitoring, and cancellation behavior, see
+[ClusterHop Workflow and Architecture](docs/clusterhop-workflow.md).
