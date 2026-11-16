@@ -15,19 +15,42 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlsplit
 
 from clusterhop.github2lab.config import GitHub2LabConfig
+from clusterhop.github2lab.urls import GitLabUrlError, ValidatedGitRemote, validate_git_remote_url
 
 DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS = 120.0
 _COMMIT_SHA_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _GITLAB_TOKEN_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_TOKEN"
+_GITLAB_HOST_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_HOST"
+_GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_ALTERNATE_HOST"
 _KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE = "KEYLOOM_PASSWORD"
+_UNSAFE_GIT_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_CURL_VERBOSE",
+        "GIT_REDIRECT_STDERR",
+        "GIT_EXEC_PATH",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+    }
+)
 _HTTP_CREDENTIAL_HELPER = (
     "!f() { "
     'if test "$1" = get; then '
+    "protocol=; host=; "
+    "while IFS='=' read -r key value; do "
+    'case "$key" in protocol) protocol=$value ;; host) host=$value ;; esac; '
+    "done; "
+    'if test "$protocol" = https && '
+    f'{{ test "$host" = "${_GITLAB_HOST_ENVIRONMENT_VARIABLE}" || '
+    f'{{ test -n "${_GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE}" && '
+    f'test "$host" = "${_GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE}"; }}; }}; then '
     'printf "%s\\n" "username=oauth2" '
     f'"password=${_GITLAB_TOKEN_ENVIRONMENT_VARIABLE}"; '
+    "fi; "
     "fi; "
     "}; f"
 )
@@ -90,9 +113,25 @@ class SubprocessGitCommandExecutor:
     ) -> GitCommandResult:
         """Run a command without a shell and sanitize execution failures."""
 
-        process_environment = os.environ.copy()
+        process_environment = {
+            name: value
+            for name, value in os.environ.items()
+            if not _is_unsafe_inherited_git_environment_variable(name)
+        }
+        for secret_name in (
+            _KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE,
+            "GITLAB_TOKEN",
+            "GITLAB_TRIGGER_TOKEN",
+            _GITLAB_TOKEN_ENVIRONMENT_VARIABLE,
+        ):
+            process_environment.pop(secret_name, None)
         process_environment.update(environment)
-        process_environment.pop(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE, None)
+        for secret_name in (
+            _KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE,
+            "GITLAB_TOKEN",
+            "GITLAB_TRIGGER_TOKEN",
+        ):
+            process_environment.pop(secret_name, None)
 
         try:
             completed = subprocess.run(
@@ -160,15 +199,31 @@ class GitLabBranchPusher:
         if current_commit.casefold() != self._config.github_commit_sha.casefold():
             raise GitPushError("Current Git HEAD does not match github_commit_sha.")
 
+        try:
+            validated_remote = validate_git_remote_url(
+                self._config.gitlab_remote_url,
+                self._config.gitlab_url,
+            )
+        except GitLabUrlError:
+            raise GitPushError("The GitLab remote URL is invalid.") from None
+        effective_remote_result = self._run_checked(
+            ("git", "ls-remote", "--get-url", "--", validated_remote.url),
+            operation="verify the effective GitLab remote URL",
+            environment=_base_git_environment(),
+        )
+        effective_remote = effective_remote_result.stdout.strip()
+        if effective_remote != validated_remote.url:
+            raise GitPushError("Git configuration rewrote the GitLab remote URL.")
+
         remote_ref = f"refs/heads/{branch_name}"
-        push_environment = _push_environment(self._config)
+        push_environment = _push_environment(self._config, validated_remote)
         self._run_checked(
             (
                 "git",
                 "push",
                 "--push-option=ci.skip",
                 "--",
-                self._config.gitlab_remote_url,
+                validated_remote.url,
                 f"HEAD:{remote_ref}",
             ),
             operation="push the GitLab CI branch",
@@ -213,19 +268,53 @@ def _base_git_environment() -> dict[str, str]:
     return {"GIT_TERMINAL_PROMPT": "0"}
 
 
-def _push_environment(config: GitHub2LabConfig) -> dict[str, str]:
+def _push_environment(
+    config: GitHub2LabConfig,
+    remote: ValidatedGitRemote,
+) -> dict[str, str]:
     environment = _base_git_environment()
-    if urlsplit(config.gitlab_remote_url).scheme.casefold() not in {"http", "https"}:
+    if remote.kind != "https":
         return environment
 
+    assert remote.https_origin is not None
+    scoped_credential_helper = f"credential.{remote.url}.helper"
+    scoped_http_configuration = f"http.{remote.url}"
     environment.update(
         {
-            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "9",
             "GIT_CONFIG_KEY_0": "credential.helper",
             "GIT_CONFIG_VALUE_0": "",
             "GIT_CONFIG_KEY_1": "credential.helper",
             "GIT_CONFIG_VALUE_1": _HTTP_CREDENTIAL_HELPER,
+            "GIT_CONFIG_KEY_2": scoped_credential_helper,
+            "GIT_CONFIG_VALUE_2": "",
+            "GIT_CONFIG_KEY_3": scoped_credential_helper,
+            "GIT_CONFIG_VALUE_3": _HTTP_CREDENTIAL_HELPER,
+            "GIT_CONFIG_KEY_4": f"{scoped_http_configuration}.followRedirects",
+            "GIT_CONFIG_VALUE_4": "false",
+            "GIT_CONFIG_KEY_5": f"{scoped_http_configuration}.sslVerify",
+            "GIT_CONFIG_VALUE_5": "true",
+            "GIT_CONFIG_KEY_6": "protocol.allow",
+            "GIT_CONFIG_VALUE_6": "never",
+            "GIT_CONFIG_KEY_7": "protocol.https.allow",
+            "GIT_CONFIG_VALUE_7": "always",
+            "GIT_CONFIG_KEY_8": "core.hooksPath",
+            "GIT_CONFIG_VALUE_8": os.devnull,
             _GITLAB_TOKEN_ENVIRONMENT_VARIABLE: config.gitlab_token,
+            _GITLAB_HOST_ENVIRONMENT_VARIABLE: remote.https_origin.credential_host,
+            _GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE: (
+                remote.https_origin.credential_host_with_explicit_default_port
+            ),
         }
     )
     return environment
+
+
+def _is_unsafe_inherited_git_environment_variable(name: str) -> bool:
+    return (
+        name in _UNSAFE_GIT_ENVIRONMENT_VARIABLES
+        or name.startswith("GIT_CONFIG_")
+        or name.startswith("GIT_TRACE")
+    )

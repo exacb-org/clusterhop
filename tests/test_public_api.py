@@ -18,6 +18,7 @@ import pytest
 import clusterhop
 from clusterhop import RunConfigurationError, RunResult, UnsupportedDestinationError
 from clusterhop.github2lab.project import ResolvedGitLabProject
+from clusterhop.github2lab.runner import run_from_environment
 
 DUMMY_TOKEN = "dummy-private-token-that-must-not-appear"
 DUMMY_TRIGGER_TOKEN = "dummy-trigger-token-that-must-not-appear"
@@ -153,6 +154,47 @@ def test_explicit_remote_url_preserves_existing_behavior_without_lookup() -> Non
         backend.call_args.args[0]["GITLAB_REMOTE_URL"]
         == "git@gitlab.example.test:group/project.git"
     )
+
+
+def test_matching_explicit_https_remote_preserves_public_api_behavior() -> None:
+    config = _config(
+        gitlab_remote_url="https://gitlab.example.test/group/project.git",
+    )
+
+    with (
+        patch("clusterhop.api.resolve_gitlab_project") as resolver,
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+
+    resolver.assert_not_called()
+    assert backend.call_args.args[0]["GITLAB_REMOTE_URL"] == config["gitlab_remote_url"]
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "http://gitlab.example.test/group/project.git",
+        "https://other.example.test/group/project.git",
+        "https://gitlab.example.test:8443/group/project.git",
+    ],
+)
+def test_insecure_or_mismatched_explicit_remote_is_rejected_safely(remote_url: str) -> None:
+    with (
+        patch("clusterhop.api.resolve_gitlab_project") as resolver,
+        patch("clusterhop.api.run_from_environment", wraps=run_from_environment) as backend,
+    ):
+        with pytest.raises(RunConfigurationError) as captured:
+            clusterhop.run(
+                config=_config(gitlab_remote_url=remote_url),
+                repo_path=".",
+                secrets=_secrets(),
+            )
+
+    resolver.assert_not_called()
+    backend.assert_called_once()
+    assert DUMMY_TOKEN not in str(captured.value)
+    assert DUMMY_TRIGGER_TOKEN not in str(captured.value)
 
 
 def test_run_does_not_map_log_summary_limit_from_options() -> None:

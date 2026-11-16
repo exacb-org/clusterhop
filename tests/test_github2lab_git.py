@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -89,17 +90,62 @@ def _success(stdout: str = "") -> GitCommandResult:
     return GitCommandResult(return_code=0, stdout=stdout, stderr="")
 
 
-def test_subprocess_executor_removes_keyloom_password_from_git_environment() -> None:
+def _https_push_environment(remote_url: str) -> dict[str, str]:
+    executor = FakeGitCommandExecutor(
+        [_success(GITHUB_COMMIT_SHA), _success(remote_url), _success()]
+    )
+    GitLabBranchPusher(
+        _config(gitlab_remote_url=remote_url),
+        executor=executor,
+        repository_path="/workspace/source",
+    ).push_current_commit()
+    return dict(executor.commands[2].environment)
+
+
+def _initialize_repository(path: Path) -> None:
+    subprocess.run(("git", "init", "--quiet", str(path)), check=True)
+
+
+def test_subprocess_executor_removes_inherited_secrets_from_git_environment() -> None:
     executor = SubprocessGitCommandExecutor()
     completed = subprocess.CompletedProcess(["git"], 0, stdout="", stderr="")
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": "vault-password"}, clear=True),
+        patch.dict(
+            "os.environ",
+            {
+                "KEYLOOM_PASSWORD": "vault-password",
+                "GITLAB_TOKEN": DUMMY_GITLAB_TOKEN,
+                "GITLAB_TRIGGER_TOKEN": DUMMY_TRIGGER_TOKEN,
+                "CLUSTERHOP_GITLAB_GIT_TOKEN": "stale-token",
+                "GIT_CONFIG_PARAMETERS": "'http.followRedirects'='true'",
+                "GIT_CONFIG_GLOBAL": "/tmp/untrusted-git-config",
+                "GIT_SSL_NO_VERIFY": "true",
+                "GIT_TRACE_CURL": "1",
+                "GIT_TRACE_REDACT": "0",
+                "GIT_EXEC_PATH": "/tmp/untrusted-git-exec-path",
+                "GIT_ASKPASS": "/tmp/untrusted-git-askpass",
+                "SSH_ASKPASS": "/tmp/untrusted-ssh-askpass",
+            },
+            clear=True,
+        ),
         patch("subprocess.run", return_value=completed) as run,
     ):
         executor.run(("git", "status"), cwd=Path("/workspace"), environment={})
 
-    assert "KEYLOOM_PASSWORD" not in run.call_args.kwargs["env"]
+    process_environment = run.call_args.kwargs["env"]
+    assert "KEYLOOM_PASSWORD" not in process_environment
+    assert "GITLAB_TOKEN" not in process_environment
+    assert "GITLAB_TRIGGER_TOKEN" not in process_environment
+    assert "CLUSTERHOP_GITLAB_GIT_TOKEN" not in process_environment
+    assert "GIT_CONFIG_PARAMETERS" not in process_environment
+    assert "GIT_CONFIG_GLOBAL" not in process_environment
+    assert "GIT_SSL_NO_VERIFY" not in process_environment
+    assert "GIT_TRACE_CURL" not in process_environment
+    assert "GIT_TRACE_REDACT" not in process_environment
+    assert "GIT_EXEC_PATH" not in process_environment
+    assert "GIT_ASKPASS" not in process_environment
+    assert "SSH_ASKPASS" not in process_environment
 
 
 @pytest.mark.parametrize(
@@ -132,7 +178,13 @@ def test_create_ci_branch_name_rejects_unsafe_commit_sha(commit_sha: str) -> Non
 
 def test_push_current_commit_uses_expected_refspec_and_ci_skip() -> None:
     repository_path = Path("/workspace/source")
-    executor = FakeGitCommandExecutor([_success(f"{GITHUB_COMMIT_SHA}\n"), _success()])
+    executor = FakeGitCommandExecutor(
+        [
+            _success(f"{GITHUB_COMMIT_SHA}\n"),
+            _success(f"{GITLAB_REMOTE_URL}\n"),
+            _success(),
+        ]
+    )
     pusher = GitLabBranchPusher(
         _config(),
         executor=executor,
@@ -145,6 +197,11 @@ def test_push_current_commit_uses_expected_refspec_and_ci_skip() -> None:
     assert executor.commands == [
         RecordedCommand(
             arguments=("git", "rev-parse", "--verify", "HEAD^{commit}"),
+            cwd=repository_path,
+            environment={"GIT_TERMINAL_PROMPT": "0"},
+        ),
+        RecordedCommand(
+            arguments=("git", "ls-remote", "--get-url", "--", GITLAB_REMOTE_URL),
             cwd=repository_path,
             environment={"GIT_TERMINAL_PROMPT": "0"},
         ),
@@ -165,7 +222,9 @@ def test_push_current_commit_uses_expected_refspec_and_ci_skip() -> None:
 
 def test_https_push_uses_ephemeral_environment_credentials() -> None:
     remote_url = "https://gitlab.example.test/group/project.git"
-    executor = FakeGitCommandExecutor([_success(GITHUB_COMMIT_SHA), _success()])
+    executor = FakeGitCommandExecutor(
+        [_success(GITHUB_COMMIT_SHA), _success(remote_url), _success()]
+    )
     pusher = GitLabBranchPusher(
         _config(gitlab_remote_url=remote_url),
         executor=executor,
@@ -174,17 +233,243 @@ def test_https_push_uses_ephemeral_environment_credentials() -> None:
 
     pusher.push_current_commit()
 
-    push_command = executor.commands[1]
+    push_command = executor.commands[2]
     assert push_command.arguments[4] == remote_url
     assert push_command.environment["GIT_TERMINAL_PROMPT"] == "0"
-    assert push_command.environment["GIT_CONFIG_COUNT"] == "2"
+    assert push_command.environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert push_command.environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert push_command.environment["GIT_CONFIG_COUNT"] == "9"
     assert push_command.environment["GIT_CONFIG_KEY_0"] == "credential.helper"
     assert push_command.environment["GIT_CONFIG_VALUE_0"] == ""
     assert push_command.environment["GIT_CONFIG_KEY_1"] == "credential.helper"
     assert "CLUSTERHOP_GITLAB_GIT_TOKEN" in push_command.environment["GIT_CONFIG_VALUE_1"]
+    assert "CLUSTERHOP_GITLAB_GIT_HOST" in push_command.environment["GIT_CONFIG_VALUE_1"]
+    assert push_command.environment["GIT_CONFIG_KEY_2"] == f"credential.{remote_url}.helper"
+    assert push_command.environment["GIT_CONFIG_VALUE_2"] == ""
+    assert push_command.environment["GIT_CONFIG_KEY_3"] == f"credential.{remote_url}.helper"
+    assert "CLUSTERHOP_GITLAB_GIT_TOKEN" in push_command.environment["GIT_CONFIG_VALUE_3"]
+    assert push_command.environment["GIT_CONFIG_KEY_4"] == f"http.{remote_url}.followRedirects"
+    assert push_command.environment["GIT_CONFIG_VALUE_4"] == "false"
+    assert push_command.environment["GIT_CONFIG_KEY_5"] == f"http.{remote_url}.sslVerify"
+    assert push_command.environment["GIT_CONFIG_VALUE_5"] == "true"
+    assert push_command.environment["GIT_CONFIG_KEY_6"] == "protocol.allow"
+    assert push_command.environment["GIT_CONFIG_VALUE_6"] == "never"
+    assert push_command.environment["GIT_CONFIG_KEY_7"] == "protocol.https.allow"
+    assert push_command.environment["GIT_CONFIG_VALUE_7"] == "always"
+    assert push_command.environment["GIT_CONFIG_KEY_8"] == "core.hooksPath"
+    assert push_command.environment["GIT_CONFIG_VALUE_8"] == os.devnull
     assert push_command.environment["CLUSTERHOP_GITLAB_GIT_TOKEN"] == DUMMY_GITLAB_TOKEN
+    assert push_command.environment["CLUSTERHOP_GITLAB_GIT_HOST"] == "gitlab.example.test"
     assert all(DUMMY_GITLAB_TOKEN not in argument for argument in push_command.arguments)
     assert all(DUMMY_TRIGGER_TOKEN not in argument for argument in push_command.arguments)
+
+
+def test_https_credential_helper_refuses_unintended_hosts() -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    helper_environment = {**os.environ, **_https_push_environment(remote_url)}
+
+    trusted = subprocess.run(
+        ("git", "credential", "fill"),
+        input="protocol=https\nhost=gitlab.example.test\n\n",
+        text=True,
+        capture_output=True,
+        check=False,
+        env=helper_environment,
+    )
+    untrusted = subprocess.run(
+        ("git", "credential", "fill"),
+        input="protocol=https\nhost=other.example.test\n\n",
+        text=True,
+        capture_output=True,
+        check=False,
+        env=helper_environment,
+    )
+
+    assert trusted.returncode == 0
+    assert f"password={DUMMY_GITLAB_TOKEN}" in trusted.stdout
+    assert untrusted.returncode != 0
+    assert DUMMY_GITLAB_TOKEN not in untrusted.stdout
+    assert DUMMY_GITLAB_TOKEN not in untrusted.stderr
+
+
+def test_real_git_security_settings_override_hostile_inherited_and_local_config(
+    tmp_path: Path,
+) -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _initialize_repository(repository)
+    subprocess.run(
+        (
+            "git",
+            "config",
+            "--local",
+            f"http.{remote_url}.followRedirects",
+            "true",
+        ),
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "--local", f"http.{remote_url}.sslVerify", "false"),
+        cwd=repository,
+        check=True,
+    )
+    environment = _https_push_environment(remote_url)
+    executor = SubprocessGitCommandExecutor()
+
+    with patch.dict(
+        "os.environ",
+        {
+            **os.environ,
+            "GIT_CONFIG_PARAMETERS": (
+                "'http.https://gitlab.example.test/group/project.git.followRedirects'='true'"
+            ),
+            "GIT_SSL_NO_VERIFY": "true",
+        },
+        clear=True,
+    ):
+        redirects = executor.run(
+            ("git", "config", "--get-urlmatch", "http.followRedirects", remote_url),
+            cwd=repository,
+            environment=environment,
+        )
+        tls = executor.run(
+            ("git", "config", "--get-urlmatch", "http.sslVerify", remote_url),
+            cwd=repository,
+            environment=environment,
+        )
+
+    assert redirects.stdout.strip() == "false"
+    assert tls.stdout.strip() == "true"
+
+
+def test_real_git_url_specific_credential_helper_is_neutralized(tmp_path: Path) -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _initialize_repository(repository)
+    marker = tmp_path / "untrusted-helper-ran"
+    malicious_helper = f"!f() {{ touch '{marker}'; }}; f"
+    subprocess.run(
+        ("git", "config", "--local", f"credential.{remote_url}.helper", malicious_helper),
+        cwd=repository,
+        check=True,
+    )
+    environment = {**os.environ, **_https_push_environment(remote_url)}
+
+    credential = subprocess.run(
+        ("git", "credential", "fill"),
+        cwd=repository,
+        env=environment,
+        input=f"url={remote_url}\n\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert credential.returncode == 0
+    assert f"password={DUMMY_GITLAB_TOKEN}" in credential.stdout
+    assert not marker.exists()
+
+
+def test_real_git_configured_pre_push_hook_is_disabled(tmp_path: Path) -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    repository = tmp_path / "repository"
+    hooks = tmp_path / "hooks"
+    repository.mkdir()
+    hooks.mkdir()
+    _initialize_repository(repository)
+    marker = tmp_path / "pre-push-hook-ran"
+    hook = hooks / "pre-push"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    hook.chmod(0o700)
+    subprocess.run(
+        ("git", "config", "--local", "core.hooksPath", str(hooks)),
+        cwd=repository,
+        check=True,
+    )
+    executor = SubprocessGitCommandExecutor()
+
+    result = executor.run(
+        ("git", "hook", "run", "pre-push"),
+        cwd=repository,
+        environment=_https_push_environment(remote_url),
+    )
+
+    assert result.return_code != 0
+    assert not marker.exists()
+
+
+def test_unexpected_git_url_rewrite_is_rejected_before_credentials_or_push() -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    rewritten_url = "https://other.example.test/group/project.git"
+    executor = FakeGitCommandExecutor([_success(GITHUB_COMMIT_SHA), _success(rewritten_url)])
+    pusher = GitLabBranchPusher(
+        _config(gitlab_remote_url=remote_url),
+        executor=executor,
+    )
+
+    with pytest.raises(GitPushError, match="rewrote"):
+        pusher.push_current_commit()
+
+    assert len(executor.commands) == 2
+    assert all(
+        "CLUSTERHOP_GITLAB_GIT_TOKEN" not in command.environment for command in executor.commands
+    )
+
+
+def test_real_git_url_rewrite_is_rejected_before_authenticated_push(tmp_path: Path) -> None:
+    remote_url = "https://gitlab.example.test/group/project.git"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _initialize_repository(repository)
+    tracked_file = repository / "tracked.txt"
+    tracked_file.write_text("test\n", encoding="utf-8")
+    subprocess.run(("git", "add", "tracked.txt"), cwd=repository, check=True)
+    subprocess.run(
+        (
+            "git",
+            "-c",
+            "user.name=ClusterHop Test",
+            "-c",
+            "user.email=clusterhop@example.test",
+            "commit",
+            "--quiet",
+            "-m",
+            "test commit",
+        ),
+        cwd=repository,
+        check=True,
+    )
+    commit_sha = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    subprocess.run(
+        (
+            "git",
+            "config",
+            "--local",
+            "url.https://other.example.test/.insteadOf",
+            "https://gitlab.example.test/",
+        ),
+        cwd=repository,
+        check=True,
+    )
+    pusher = GitLabBranchPusher(
+        _config(gitlab_remote_url=remote_url, github_commit_sha=commit_sha),
+        repository_path=repository,
+    )
+
+    with pytest.raises(GitPushError, match="rewrote") as captured:
+        pusher.push_current_commit()
+
+    assert DUMMY_GITLAB_TOKEN not in str(captured.value)
+    assert DUMMY_TRIGGER_TOKEN not in str(captured.value)
 
 
 def test_pusher_repr_does_not_expose_configuration() -> None:
@@ -259,6 +544,7 @@ def test_push_failure_is_sanitized() -> None:
     executor = FakeGitCommandExecutor(
         [
             _success(GITHUB_COMMIT_SHA),
+            _success(GITLAB_REMOTE_URL),
             GitCommandResult(return_code=1, stdout="", stderr=sensitive_output),
         ]
     )
@@ -274,7 +560,7 @@ def test_push_failure_is_sanitized() -> None:
     assert sensitive_output not in message
 
 
-@pytest.mark.parametrize("failure_on_command", [1, 2])
+@pytest.mark.parametrize("failure_on_command", [1, 2, 3])
 def test_command_execution_failure_is_sanitized(failure_on_command: int) -> None:
     execution_error = GitCommandExecutionError(
         f"execution failed with {DUMMY_GITLAB_TOKEN} and {DUMMY_TRIGGER_TOKEN}"
@@ -282,8 +568,10 @@ def test_command_execution_failure_is_sanitized(failure_on_command: int) -> None
     outcomes: list[GitCommandResult | GitCommandExecutionError]
     if failure_on_command == 1:
         outcomes = [execution_error]
-    else:
+    elif failure_on_command == 2:
         outcomes = [_success(GITHUB_COMMIT_SHA), execution_error]
+    else:
+        outcomes = [_success(GITHUB_COMMIT_SHA), _success(GITLAB_REMOTE_URL), execution_error]
     pusher = GitLabBranchPusher(_config(), executor=FakeGitCommandExecutor(outcomes))
 
     with pytest.raises(GitPushError) as captured:

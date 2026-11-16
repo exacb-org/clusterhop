@@ -159,10 +159,6 @@ def test_resolve_project_rejects_untrusted_clone_origin(remote_url: str) -> None
             "https://gitlab.example.test:443",
             "https://gitlab.example.test/group/project.git",
         ),
-        (
-            "http://gitlab.example.test:80",
-            "http://gitlab.example.test/group/project.git",
-        ),
     ],
 )
 def test_resolve_project_accepts_matching_effective_origin(
@@ -262,6 +258,7 @@ def test_transport_failure_is_sanitized() -> None:
     ("field", "value"),
     [
         ("gitlab_url", ""),
+        ("gitlab_url", "http://gitlab.example.test"),
         ("gitlab_url", "file:///tmp/gitlab"),
         ("gitlab_url", "https://user:password@gitlab.example.test"),
         ("project_identifier", ""),

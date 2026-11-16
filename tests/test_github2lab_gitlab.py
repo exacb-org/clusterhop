@@ -8,9 +8,14 @@
 from __future__ import annotations
 
 import json
+from email.message import Message
+from io import BytesIO
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Callable, cast
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -21,11 +26,115 @@ from clusterhop.github2lab.gitlab import (
     GitLabClient,
     HttpResponse,
     HttpTransportError,
+    UrllibHttpTransport,
+    _RejectRedirectHandler,
 )
 from clusterhop.github2lab.models import GitLabJob, GitLabPipeline
 
 DUMMY_GITLAB_TOKEN = "dummy-private-token"
 DUMMY_TRIGGER_TOKEN = "dummy-trigger-token"
+
+
+@pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize(
+    "redirect_url",
+    [
+        "https://other.example.test/steal",
+        "http://gitlab.example.test/downgrade",
+        "https://gitlab.example.test/other-endpoint",
+    ],
+)
+def test_urllib_redirect_handler_rejects_every_redirect_without_forwarding_credentials(
+    status_code: int,
+    redirect_url: str,
+) -> None:
+    request = Request(
+        "https://gitlab.example.test/api/v4/projects/1",
+        headers={"PRIVATE-TOKEN": DUMMY_GITLAB_TOKEN},
+    )
+
+    redirect_request = cast(
+        Callable[..., Request | None],
+        _RejectRedirectHandler().redirect_request,
+    )
+    redirected = redirect_request(
+        request,
+        BytesIO(b""),
+        status_code,
+        "redirect",
+        Message(),
+        redirect_url,
+    )
+
+    assert redirected is None
+    assert DUMMY_GITLAB_TOKEN not in redirect_url
+
+
+def test_urllib_redirect_handler_does_not_reissue_post_trigger_token() -> None:
+    body = f"token={DUMMY_TRIGGER_TOKEN}&ref=ci/test".encode()
+    request = Request(
+        "https://gitlab.example.test/api/v4/projects/1/trigger/pipeline",
+        data=body,
+        method="POST",
+    )
+    redirect_request = cast(
+        Callable[..., Request | None],
+        _RejectRedirectHandler().redirect_request,
+    )
+
+    redirected = redirect_request(
+        request,
+        BytesIO(b""),
+        302,
+        "redirect",
+        Message(),
+        "https://other.example.test/steal",
+    )
+
+    assert redirected is None
+    assert request.data == body
+
+
+def test_urllib_transport_preserves_direct_https_requests() -> None:
+    response = MagicMock()
+    response.status = 200
+    response.headers.items.return_value = [("Content-Type", "application/json")]
+    response.read.return_value = b'{"ok":true}'
+    context = MagicMock()
+    context.__enter__.return_value = response
+    opener = MagicMock()
+    opener.open.return_value = context
+
+    with patch("clusterhop.github2lab.gitlab.build_opener", return_value=opener):
+        result = UrllibHttpTransport().request(
+            method="GET",
+            url="https://gitlab.example.test/api/v4/projects/1",
+            headers={"PRIVATE-TOKEN": DUMMY_GITLAB_TOKEN},
+            body=None,
+            timeout=7.0,
+        )
+
+    assert result.status_code == 200
+    sent_request = opener.open.call_args.args[0]
+    assert isinstance(sent_request, Request)
+    assert sent_request.full_url == "https://gitlab.example.test/api/v4/projects/1"
+    assert sent_request.get_header("Private-token") == DUMMY_GITLAB_TOKEN
+
+
+def test_urllib_transport_rejects_http_before_opening_request() -> None:
+    with patch("clusterhop.github2lab.gitlab.build_opener") as build:
+        transport = UrllibHttpTransport()
+
+    with pytest.raises(HttpTransportError, match="request failed"):
+        transport.request(
+            method="GET",
+            url="http://gitlab.example.test/api/v4/projects/1",
+            headers={"PRIVATE-TOKEN": DUMMY_GITLAB_TOKEN},
+            body=None,
+            timeout=7.0,
+        )
+
+    build.return_value.open.assert_not_called()
 
 
 @dataclass(frozen=True)

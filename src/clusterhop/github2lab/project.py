@@ -10,13 +10,18 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from clusterhop.github2lab.gitlab import (
     DEFAULT_HTTP_TIMEOUT_SECONDS,
     HttpTransport,
     HttpTransportError,
     UrllibHttpTransport,
+)
+from clusterhop.github2lab.urls import (
+    GitLabUrlError,
+    validate_gitlab_base_url,
+    validate_resolved_https_git_remote,
 )
 
 
@@ -43,12 +48,9 @@ def resolve_gitlab_project(
 ) -> ResolvedGitLabProject:
     """Resolve a numeric project ID and HTTP Git URL through the GitLab Projects API."""
 
-    normalized_gitlab_url = gitlab_url.strip() if isinstance(gitlab_url, str) else ""
-    if (
-        not isinstance(gitlab_url, str)
-        or not normalized_gitlab_url
-        or not _is_safe_gitlab_base_url(normalized_gitlab_url)
-    ):
+    try:
+        normalized_gitlab_url = validate_gitlab_base_url(gitlab_url)
+    except GitLabUrlError:
         raise GitLabProjectResolutionError("GitLab project resolution configuration is invalid.")
     if not isinstance(project_identifier, str) or not project_identifier.strip():
         raise GitLabProjectResolutionError("GitLab project resolution configuration is invalid.")
@@ -63,7 +65,6 @@ def resolve_gitlab_project(
         raise GitLabProjectResolutionError("GitLab project resolution timeout is invalid.")
 
     encoded_project = quote(project_identifier.strip(), safe="")
-    normalized_gitlab_url = normalized_gitlab_url.rstrip("/")
     url = f"{normalized_gitlab_url}/api/v4/projects/{encoded_project}"
     http = transport if transport is not None else UrllibHttpTransport()
     try:
@@ -89,17 +90,17 @@ def resolve_gitlab_project(
 
     project_id = payload.get("id")
     project_path = payload.get("path_with_namespace")
-    remote_url = payload.get("http_url_to_repo")
+    remote_url_value = payload.get("http_url_to_repo")
+    try:
+        remote_url = validate_resolved_https_git_remote(remote_url_value, normalized_gitlab_url)
+    except GitLabUrlError:
+        raise GitLabProjectResolutionError("GitLab returned invalid project metadata.") from None
     if (
         isinstance(project_id, bool)
         or not isinstance(project_id, int)
         or project_id <= 0
         or not isinstance(project_path, str)
         or not project_path.strip()
-        or not isinstance(remote_url, str)
-        or not remote_url.strip()
-        or not _is_safe_http_git_url(remote_url)
-        or not _has_same_origin(normalized_gitlab_url, remote_url)
     ):
         raise GitLabProjectResolutionError("GitLab returned invalid project metadata.")
 
@@ -108,55 +109,3 @@ def resolve_gitlab_project(
         path_with_namespace=project_path,
         http_url_to_repo=remote_url,
     )
-
-
-def _is_safe_http_git_url(value: str) -> bool:
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return False
-    return (
-        parsed.scheme.casefold() in {"http", "https"}
-        and bool(parsed.netloc)
-        and parsed.username is None
-        and parsed.password is None
-        and "\n" not in value
-        and "\r" not in value
-    )
-
-
-def _is_safe_gitlab_base_url(value: str) -> bool:
-    try:
-        parsed = urlsplit(value.strip())
-    except ValueError:
-        return False
-    return (
-        parsed.scheme.casefold() in {"http", "https"}
-        and bool(parsed.netloc)
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and "\n" not in value
-        and "\r" not in value
-    )
-
-
-def _has_same_origin(base_url: str, remote_url: str) -> bool:
-    try:
-        base = urlsplit(base_url)
-        remote = urlsplit(remote_url)
-        return (
-            base.scheme.casefold() == remote.scheme.casefold()
-            and base.hostname == remote.hostname
-            and _effective_port(base.scheme, base.port)
-            == _effective_port(remote.scheme, remote.port)
-        )
-    except ValueError:
-        return False
-
-
-def _effective_port(scheme: str, explicit_port: int | None) -> int:
-    if explicit_port is not None:
-        return explicit_port
-    return 443 if scheme.casefold() == "https" else 80

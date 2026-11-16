@@ -11,13 +11,16 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from email.message import Message
+from typing import IO
 from typing import Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
 from clusterhop.github2lab.config import GitHub2LabConfig
 from clusterhop.github2lab.models import GitLabJob, GitLabPipeline
+from clusterhop.github2lab.urls import GitLabUrlError, validate_https_request_url
 
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 JOBS_PER_PAGE = 100
@@ -73,8 +76,27 @@ class HttpTransport(Protocol):
         """Send one HTTP request and return its response."""
 
 
+class _RejectRedirectHandler(HTTPRedirectHandler):
+    """Refuse every redirect so credentials never reach another request target."""
+
+    def redirect_request(
+        self,
+        request: Request,
+        response: IO[bytes],
+        code: int,
+        message: str,
+        headers: Message,
+        new_url: str,
+    ) -> None:
+        del request, response, code, message, headers, new_url
+        return None
+
+
 class UrllibHttpTransport:
     """Standard-library HTTP transport for GitLab API requests."""
+
+    def __init__(self) -> None:
+        self._opener: OpenerDirector = build_opener(_RejectRedirectHandler())
 
     def request(
         self,
@@ -87,9 +109,13 @@ class UrllibHttpTransport:
     ) -> HttpResponse:
         """Send a request without exposing request details in failures."""
 
-        request = Request(url=url, data=body, headers=dict(headers), method=method)
         try:
-            with urlopen(request, timeout=timeout) as response:
+            validated_url = validate_https_request_url(url)
+        except GitLabUrlError:
+            raise HttpTransportError("GitLab HTTP request failed.") from None
+        request = Request(url=validated_url, data=body, headers=dict(headers), method=method)
+        try:
+            with self._opener.open(request, timeout=timeout) as response:
                 return HttpResponse(
                     status_code=response.status,
                     headers=dict(response.headers.items()),

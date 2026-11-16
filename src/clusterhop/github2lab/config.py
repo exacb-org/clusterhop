@@ -15,7 +15,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from urllib.parse import urlsplit
+
+from clusterhop.github2lab.urls import (
+    GitLabUrlError,
+    validate_git_remote_url,
+    validate_gitlab_base_url,
+)
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_PIPELINE_TIMEOUT_SECONDS = 150.0
@@ -91,6 +96,16 @@ class GitHub2LabConfig:
             self.gitlab_remote_url,
             secrets=(self.gitlab_token, self.gitlab_trigger_token),
         )
+        try:
+            normalized_gitlab_url = validate_gitlab_base_url(self.gitlab_url)
+            normalized_remote = validate_git_remote_url(
+                self.gitlab_remote_url,
+                normalized_gitlab_url,
+            )
+        except GitLabUrlError as error:
+            raise ConfigurationError(str(error)) from None
+        object.__setattr__(self, "gitlab_url", normalized_gitlab_url)
+        object.__setattr__(self, "gitlab_remote_url", normalized_remote.url)
 
         variables = validate_extra_pipeline_variables(self.extra_pipeline_variables)
         object.__setattr__(self, "extra_pipeline_variables", MappingProxyType(variables))
@@ -192,17 +207,6 @@ def _validate_positive_integer(field_name: str, value: object) -> None:
 def _validate_token_free_remote_url(remote_url: str, secrets: tuple[str, ...]) -> None:
     if any(secret and secret in remote_url for secret in secrets):
         raise ConfigurationError("gitlab_remote_url must not contain authentication secrets.")
-
-    try:
-        parsed_url = urlsplit(remote_url)
-        has_http_credentials = parsed_url.scheme.lower() in {"http", "https"} and (
-            parsed_url.username is not None or parsed_url.password is not None
-        )
-    except ValueError as error:
-        raise ConfigurationError("gitlab_remote_url is invalid.") from error
-
-    if has_http_credentials:
-        raise ConfigurationError("gitlab_remote_url must not contain embedded credentials.")
 
 
 def _required_environment_value(environ: Mapping[str, str], name: str) -> str:

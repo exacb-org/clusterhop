@@ -16,7 +16,6 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from clusterhop.api import RunConfigurationError, _prepare_gitlab_environment
 from clusterhop.cli import (
@@ -32,6 +31,7 @@ from clusterhop.github2lab.fallback import (
 from clusterhop.github2lab.config import DEFAULT_CLEANUP_TIMEOUT_SECONDS
 from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
 from clusterhop.github2lab.state import FilePipelineStateStore, PipelineStateError
+from clusterhop.github2lab.urls import GitLabUrlError, validate_gitlab_base_url
 
 _ACTION_SCHEMA_VERSION = 1
 _ACTION_DIRECTORY_NAME = ".clusterhop-action"
@@ -241,25 +241,12 @@ def _required_directory(environ: Mapping[str, str], name: str) -> Path:
 
 
 def _validate_gitlab_url(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise GitHubActionError("Action input gitlab-url is required.")
-    normalized = value.strip().rstrip("/")
     try:
-        parsed = urlsplit(normalized)
-    except ValueError:
-        raise GitHubActionError("Action input gitlab-url is invalid.") from None
-    if (
-        parsed.scheme.casefold() not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or "\n" in normalized
-        or "\r" in normalized
-    ):
-        raise GitHubActionError("Action input gitlab-url is invalid.")
-    return normalized
+        return validate_gitlab_base_url(value)
+    except GitLabUrlError:
+        if not isinstance(value, str) or not value.strip():
+            raise GitHubActionError("Action input gitlab-url is required.") from None
+        raise GitHubActionError("Action input gitlab-url must be a valid HTTPS URL.") from None
 
 
 def _validate_gitlab_project(value: str) -> str:

@@ -302,6 +302,43 @@ def test_rejects_http_remote_url_with_embedded_credentials(scheme: str) -> None:
         load_config_from_environment(environ)
 
 
+def test_rejects_plain_http_gitlab_url() -> None:
+    environ = valid_environment()
+    environ["GITLAB_URL"] = "http://gitlab.example.test"
+    environ["GITLAB_REMOTE_URL"] = "http://gitlab.example.test/group/project.git"
+
+    with pytest.raises(ConfigurationError, match="HTTPS"):
+        load_config_from_environment(environ)
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "http://gitlab.example.test/group/project.git",
+        "https://other.example.test/group/project.git",
+        "https://gitlab.example.test:8443/group/project.git",
+    ],
+)
+def test_rejects_insecure_or_mismatched_http_git_remote(remote_url: str) -> None:
+    environ = valid_environment()
+    environ["GITLAB_REMOTE_URL"] = remote_url
+
+    with pytest.raises(ConfigurationError) as captured:
+        load_config_from_environment(environ)
+
+    assert GITLAB_TOKEN not in str(captured.value)
+    assert GITLAB_TRIGGER_TOKEN not in str(captured.value)
+
+
+def test_accepts_equivalent_default_https_ports() -> None:
+    environ = valid_environment()
+    environ["GITLAB_URL"] = "https://gitlab.example.test:443"
+
+    config = load_config_from_environment(environ)
+
+    assert config.gitlab_remote_url == "https://gitlab.example.test/group/project.git"
+
+
 def test_allows_ssh_remote_url() -> None:
     environ = valid_environment()
     environ["GITLAB_REMOTE_URL"] = "git@gitlab.example.test:group/project.git"

@@ -196,7 +196,8 @@ def test_invalid_machine_is_rejected_before_cli_execution(tmp_path: Path, machin
         ({"gitlab_url": ""}, "gitlab-url is required"),
         ({"gitlab_project": ""}, "gitlab-project is required"),
         ({"secrets_file": ""}, "secrets-file is required"),
-        ({"gitlab_url": "file:///tmp/gitlab"}, "gitlab-url is invalid"),
+        ({"gitlab_url": "file:///tmp/gitlab"}, "gitlab-url must be a valid HTTPS URL"),
+        ({"gitlab_url": "http://gitlab.example.test"}, "gitlab-url must be a valid HTTPS URL"),
         ({"gitlab_project": "../project"}, "gitlab-project is invalid"),
     ],
 )
@@ -277,9 +278,7 @@ def test_missing_required_encrypted_credential_is_rejected(tmp_path: Path) -> No
     environ = _environment(tmp_path)
     path = Path(environ["GITHUB_WORKSPACE"]) / "missing-credential.yaml"
     path.write_text(
-        "gitlab_token:\n"
-        "  __keyloom__: secret\n"
-        f'  value: "{_encrypted_value(DUMMY_TOKEN)}"\n',
+        "gitlab_token:\n" "  __keyloom__: secret\n" f'  value: "{_encrypted_value(DUMMY_TOKEN)}"\n',
         encoding="utf-8",
     )
 
