@@ -42,4 +42,4 @@ Pin the Action to a full commit SHA until a reviewed release tag is available.
 ## Documentation
 
 For the complete workflow, architecture, configuration, monitoring, and cancellation behavior, see
-[ClusterHop Workflow and Architecture](docs/clusterhop-workflow.md).
+[ClusterHop Workflow and Architecture](https://github.com/exacb-org/clusterhop/blob/main/docs/clusterhop-workflow.md).

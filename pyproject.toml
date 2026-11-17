@@ -7,9 +7,10 @@
 name = "clusterhop"
 dynamic = ["version"]
 requires-python = ">=3.11"
-description = 'A clusterhop Parser and Emitter'
+description = "CI/CD integration connecting GitHub, GitLab, and HPC workflows"
 readme = "readme.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
 { name = "Jayesh Badwaik", email = "j.badwaik@fz-juelich.de" },
 ]
@@ -22,7 +23,7 @@ dependencies = [
 ]
 
 [project.urls]
-Source = "https://ambhora.codes/software/clusterhop"
+Source = "https://github.com/exacb-org/clusterhop"
 
 [project.scripts]
 clusterhop = "clusterhop.cli:main"
