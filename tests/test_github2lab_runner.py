@@ -471,6 +471,65 @@ def test_timeout_accepts_canceling_response_and_marks_state_inactive() -> None:
     assert state_store.states[-1].pipeline_status == "canceling"
 
 
+def test_timeout_is_preserved_when_job_collection_fails() -> None:
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+    gitlab.errors["get_jobs"] = RuntimeError(f"jobs failed {DUMMY_GITLAB_TOKEN}")
+
+    result = _runner(gitlab=gitlab).run()
+
+    assert result.status == "timeout"
+    assert result.exit_code == 1
+    assert result.error_message == "github2lab failed while fetching GitLab pipeline jobs."
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert DUMMY_GITLAB_TOKEN not in result.error_message
+    assert DUMMY_GITLAB_TOKEN not in result.summary
+
+
+def test_timeout_is_preserved_when_summary_rendering_fails() -> None:
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+
+    def failing_renderer(data: GitHubSummaryData) -> str:
+        del data
+        raise RuntimeError(f"render failed {DUMMY_TRIGGER_TOKEN}")
+
+    result = _runner(gitlab=gitlab, renderer=failing_renderer).run()
+
+    assert result.status == "timeout"
+    assert result.exit_code == 1
+    assert result.error_message == "Unable to generate the GitHub Actions summary."
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert DUMMY_TRIGGER_TOKEN not in result.error_message
+    assert DUMMY_TRIGGER_TOKEN not in result.summary
+
+
+def test_timeout_is_preserved_when_summary_writing_fails() -> None:
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+    writer = FakeSummaryWriter(error=RuntimeError(f"write failed {DUMMY_GITLAB_TOKEN}"))
+
+    result = _runner(gitlab=gitlab, writer=writer).run()
+
+    assert result.status == "timeout"
+    assert result.exit_code == 1
+    assert result.error_message == "Unable to write the GitHub Actions summary."
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert DUMMY_GITLAB_TOKEN not in result.error_message
+    assert DUMMY_GITLAB_TOKEN not in result.summary
+
+
+def test_timeout_cleanup_failure_remains_primary_when_job_collection_also_fails() -> None:
+    gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("running")])
+    gitlab.errors["cancel"] = RuntimeError(f"cancel failed {DUMMY_GITLAB_TOKEN}")
+    gitlab.errors["get_jobs"] = RuntimeError(f"jobs failed {DUMMY_TRIGGER_TOKEN}")
+
+    result = _runner(gitlab=gitlab).run()
+
+    assert result.status == "timeout"
+    assert result.error_message == "GitLab pipeline timed out, but cleanup failed."
+    assert gitlab.cancel_pipeline_ids == [42]
+    assert DUMMY_GITLAB_TOKEN not in result.error_message
+    assert DUMMY_TRIGGER_TOKEN not in result.error_message
+
+
 def test_no_jobs_produces_clear_fallback_without_trace_request() -> None:
     gitlab = FakeGitLabClient(pipeline_updates=[_pipeline("success")], jobs=())
 

@@ -142,6 +142,152 @@ def test_run_resolves_project_when_remote_url_is_omitted() -> None:
     assert environment["GITLAB_REMOTE_URL"] == resolver_result.http_url_to_repo
 
 
+@pytest.mark.parametrize(
+    ("config_overrides", "options", "environment", "expected_field"),
+    [
+        ({"github_commit_sha": None}, None, {}, "GITHUB_SHA"),
+        ({}, {"poll_interval_seconds": 0}, {}, "poll_interval_seconds"),
+        (
+            {},
+            {"poll_interval_seconds": 10, "pipeline_timeout_seconds": 5},
+            {},
+            "pipeline_timeout_seconds",
+        ),
+        ({}, {"pipeline_state_file": "   "}, {}, "CLUSTERHOP_PIPELINE_STATE_FILE"),
+        ({}, None, {"CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES": "0"}, "log_summary_limit_bytes"),
+    ],
+)
+def test_invalid_local_configuration_prevents_project_lookup(
+    config_overrides: dict[str, object],
+    options: dict[str, object] | None,
+    environment: dict[str, str],
+    expected_field: str,
+) -> None:
+    config = _config(
+        gitlab_remote_url=None,
+        gitlab_project_id=None,
+        gitlab_project_path="group/project",
+        **config_overrides,
+    )
+
+    with (
+        patch.dict("os.environ", environment, clear=True),
+        patch("clusterhop.api.resolve_gitlab_project") as resolver,
+        patch("clusterhop.api.run_from_environment") as backend,
+        pytest.raises(RunConfigurationError) as captured,
+    ):
+        clusterhop.run(config=config, repo_path=".", options=options, secrets=_secrets())
+
+    assert expected_field in str(captured.value)
+    assert DUMMY_TOKEN not in str(captured.value)
+    assert DUMMY_TRIGGER_TOKEN not in str(captured.value)
+    resolver.assert_not_called()
+    backend.assert_not_called()
+
+
+def _config_with_project_selectors(
+    *,
+    remote_url: str | None,
+    project_id: object | None,
+    project_path: object | None,
+) -> dict[str, object]:
+    config = _config(gitlab_remote_url=remote_url)
+    config.pop("gitlab_project_id")
+    if project_id is not None:
+        config["gitlab_project_id"] = project_id
+    if project_path is not None:
+        config["gitlab_project_path"] = project_path
+    return config
+
+
+@pytest.mark.parametrize(
+    ("project_id", "project_path", "accepted"),
+    [
+        (8894, None, True),
+        (None, "group/project", True),
+        (8894, "group/project", False),
+        (None, None, False),
+    ],
+)
+def test_project_selector_contract_with_explicit_remote(
+    project_id: object | None,
+    project_path: object | None,
+    accepted: bool,
+) -> None:
+    config = _config_with_project_selectors(
+        remote_url="https://gitlab.example.test/group/project.git",
+        project_id=project_id,
+        project_path=project_path,
+    )
+
+    with (
+        patch("clusterhop.api.resolve_gitlab_project") as resolver,
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        if accepted:
+            clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+        else:
+            with pytest.raises(
+                RunConfigurationError, match="gitlab_project_id or gitlab_project_path"
+            ):
+                clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+
+    resolver.assert_not_called()
+    assert backend.call_count == int(accepted)
+
+
+@pytest.mark.parametrize(
+    ("project_id", "project_path", "accepted", "lookup_identifier"),
+    [
+        (8894, None, True, "8894"),
+        (None, "group/project", True, "group/project"),
+        (8894, "group/project", False, None),
+        (None, None, False, None),
+    ],
+)
+def test_project_selector_contract_without_explicit_remote(
+    project_id: object | None,
+    project_path: object | None,
+    accepted: bool,
+    lookup_identifier: str | None,
+) -> None:
+    config = _config_with_project_selectors(
+        remote_url=None,
+        project_id=project_id,
+        project_path=project_path,
+    )
+    resolved_project = ResolvedGitLabProject(
+        id=8894,
+        path_with_namespace="group/project",
+        http_url_to_repo="https://gitlab.example.test/group/project.git",
+    )
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch(
+            "clusterhop.api.resolve_gitlab_project",
+            return_value=resolved_project,
+        ) as resolver,
+        patch("clusterhop.api.run_from_environment", return_value=_internal_result()) as backend,
+    ):
+        if accepted:
+            clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+        else:
+            with pytest.raises(
+                RunConfigurationError, match="gitlab_project_id or gitlab_project_path"
+            ):
+                clusterhop.run(config=config, repo_path=".", secrets=_secrets())
+
+    if accepted:
+        assert resolver.call_args.kwargs["project_identifier"] == lookup_identifier
+        environment = backend.call_args.args[0]
+        assert environment["GITLAB_PROJECT_ID"] == "8894"
+        assert "GITLAB_PROJECT_PATH" not in environment
+    else:
+        resolver.assert_not_called()
+        backend.assert_not_called()
+
+
 def test_explicit_remote_url_preserves_existing_behavior_without_lookup() -> None:
     with (
         patch("clusterhop.api.resolve_gitlab_project") as resolver,

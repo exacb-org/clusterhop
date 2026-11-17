@@ -18,6 +18,7 @@ from clusterhop.github2lab.config import (
     GITLAB_VARIABLES_ENVIRONMENT_NAME,
     ConfigurationError,
     validate_extra_pipeline_variables,
+    validate_environment_before_project_resolution,
 )
 from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
 from clusterhop.github2lab.project import (
@@ -85,9 +86,13 @@ def run(
             "The requested destination type is not supported by this ClusterHop version."
         )
 
-    environment = _prepare_gitlab_environment(config, options, secrets)
-
     try:
+        environment = _prepare_gitlab_environment(
+            config,
+            options,
+            secrets,
+            validate_run_inputs=True,
+        )
         internal_result = run_from_environment(
             environment,
             repository_path=repo_path,
@@ -109,6 +114,7 @@ def _prepare_gitlab_environment(
     secrets: InputObject | None,
     *,
     project_resolution_timeout_seconds: float | None = None,
+    validate_run_inputs: bool = False,
 ) -> dict[str, str]:
     """Adapt public GitLab inputs into the existing validated environment contract."""
 
@@ -116,6 +122,8 @@ def _prepare_gitlab_environment(
     _copy_config_fields(config, environment)
     _copy_secret_fields(secrets, environment)
     _copy_option_fields(options, environment)
+    if validate_run_inputs:
+        validate_environment_before_project_resolution(environment)
     _resolve_project_if_remote_is_missing(
         environment,
         request_timeout_seconds=project_resolution_timeout_seconds,

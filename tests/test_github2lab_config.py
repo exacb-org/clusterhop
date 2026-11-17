@@ -17,6 +17,7 @@ from clusterhop.github2lab.config import (
     ConfigurationError,
     GitHub2LabConfig,
     load_config_from_environment,
+    validate_environment_before_project_resolution,
 )
 
 GITLAB_TOKEN = "dummy-gitlab-token"
@@ -78,6 +79,35 @@ def test_loads_project_path_instead_of_project_id() -> None:
 
     assert config.gitlab_project_id is None
     assert config.gitlab_project_path == "group/project"
+
+
+def test_pre_resolution_validation_accepts_configuration_without_remote_url() -> None:
+    environ = valid_environment()
+    del environ["GITLAB_REMOTE_URL"]
+
+    validate_environment_before_project_resolution(environ)
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "value"),
+    [
+        ("CLUSTERHOP_POLL_INTERVAL_SECONDS", "0"),
+        ("CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS", "not-a-number"),
+        ("CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES", "-1"),
+        ("CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS", "nan"),
+        ("CLUSTERHOP_PIPELINE_STATE_FILE", "   "),
+    ],
+)
+def test_pre_resolution_validation_rejects_invalid_local_values(
+    environment_name: str,
+    value: str,
+) -> None:
+    environ = valid_environment()
+    del environ["GITLAB_REMOTE_URL"]
+    environ[environment_name] = value
+
+    with pytest.raises(ConfigurationError):
+        validate_environment_before_project_resolution(environ)
 
 
 def test_loads_runtime_overrides() -> None:

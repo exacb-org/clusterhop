@@ -76,22 +76,13 @@ class GitHub2LabConfig:
         for field_name, value in required_strings.items():
             _validate_required_string(field_name, value)
 
-        project_id_is_set = _is_non_empty_string(self.gitlab_project_id)
-        project_path_is_set = _is_non_empty_string(self.gitlab_project_path)
-        if project_id_is_set == project_path_is_set:
-            raise ConfigurationError(
-                "Exactly one of gitlab_project_id or gitlab_project_path must be provided."
-            )
-
-        _validate_positive_float("poll_interval_seconds", self.poll_interval_seconds)
-        _validate_positive_float("pipeline_timeout_seconds", self.pipeline_timeout_seconds)
-        _validate_positive_integer("log_summary_limit_bytes", self.log_summary_limit_bytes)
-        _validate_positive_float("cleanup_timeout_seconds", self.cleanup_timeout_seconds)
-        if self.pipeline_timeout_seconds < self.poll_interval_seconds:
-            raise ConfigurationError(
-                "pipeline_timeout_seconds must be greater than or equal to "
-                "poll_interval_seconds."
-            )
+        _validate_project_selector(self.gitlab_project_id, self.gitlab_project_path)
+        _validate_runtime_limits(
+            poll_interval_seconds=self.poll_interval_seconds,
+            pipeline_timeout_seconds=self.pipeline_timeout_seconds,
+            log_summary_limit_bytes=self.log_summary_limit_bytes,
+            cleanup_timeout_seconds=self.cleanup_timeout_seconds,
+        )
         _validate_token_free_remote_url(
             self.gitlab_remote_url,
             secrets=(self.gitlab_token, self.gitlab_trigger_token),
@@ -156,6 +147,53 @@ def load_config_from_environment(
     )
 
 
+def validate_environment_before_project_resolution(environ: Mapping[str, str]) -> None:
+    """Validate locally checkable configuration before an authenticated project lookup."""
+
+    _required_environment_value(environ, "GITLAB_TOKEN")
+    _required_environment_value(environ, "GITLAB_TRIGGER_TOKEN")
+    gitlab_url = _required_environment_value(environ, "GITLAB_URL")
+    project_id = _optional_environment_value(environ, "GITLAB_PROJECT_ID")
+    project_path = _optional_environment_value(environ, "GITLAB_PROJECT_PATH")
+    _required_environment_value(environ, "GITHUB_SHA")
+    _required_environment_value(environ, "GITHUB_REPOSITORY")
+    _required_environment_value(environ, "GITHUB_RUN_ID")
+    poll_interval_seconds = _float_environment_value(
+        environ,
+        "CLUSTERHOP_POLL_INTERVAL_SECONDS",
+        DEFAULT_POLL_INTERVAL_SECONDS,
+    )
+    pipeline_timeout_seconds = _float_environment_value(
+        environ,
+        "CLUSTERHOP_PIPELINE_TIMEOUT_SECONDS",
+        DEFAULT_PIPELINE_TIMEOUT_SECONDS,
+    )
+    log_summary_limit_bytes = _integer_environment_value(
+        environ,
+        "CLUSTERHOP_LOG_SUMMARY_LIMIT_BYTES",
+        DEFAULT_LOG_SUMMARY_LIMIT_BYTES,
+    )
+    cleanup_timeout_seconds = _float_environment_value(
+        environ,
+        "CLUSTERHOP_CLEANUP_TIMEOUT_SECONDS",
+        DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+    )
+    _path_environment_value(environ, "CLUSTERHOP_PIPELINE_STATE_FILE")
+    _pipeline_variables_environment_value(environ)
+
+    _validate_project_selector(project_id, project_path)
+    _validate_runtime_limits(
+        poll_interval_seconds=poll_interval_seconds,
+        pipeline_timeout_seconds=pipeline_timeout_seconds,
+        log_summary_limit_bytes=log_summary_limit_bytes,
+        cleanup_timeout_seconds=cleanup_timeout_seconds,
+    )
+    try:
+        validate_gitlab_base_url(gitlab_url)
+    except GitLabUrlError as error:
+        raise ConfigurationError(str(error)) from None
+
+
 def validate_extra_pipeline_variables(value: object) -> dict[str, str]:
     """Return a validated copy of user-supplied GitLab trigger variables."""
 
@@ -202,6 +240,36 @@ def _validate_positive_float(field_name: str, value: object) -> None:
 def _validate_positive_integer(field_name: str, value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ConfigurationError(f"Configuration field {field_name} must be greater than 0.")
+
+
+def _validate_project_selector(project_id: object, project_path: object) -> None:
+    project_id_is_set = _is_non_empty_string(project_id)
+    project_path_is_set = _is_non_empty_string(project_path)
+    if project_id_is_set == project_path_is_set:
+        raise ConfigurationError(
+            "Exactly one of gitlab_project_id or gitlab_project_path must be provided."
+        )
+
+
+def _validate_runtime_limits(
+    *,
+    poll_interval_seconds: object,
+    pipeline_timeout_seconds: object,
+    log_summary_limit_bytes: object,
+    cleanup_timeout_seconds: object,
+) -> None:
+    _validate_positive_float("poll_interval_seconds", poll_interval_seconds)
+    _validate_positive_float("pipeline_timeout_seconds", pipeline_timeout_seconds)
+    _validate_positive_integer("log_summary_limit_bytes", log_summary_limit_bytes)
+    _validate_positive_float("cleanup_timeout_seconds", cleanup_timeout_seconds)
+    if (
+        isinstance(pipeline_timeout_seconds, (int, float))
+        and isinstance(poll_interval_seconds, (int, float))
+        and pipeline_timeout_seconds < poll_interval_seconds
+    ):
+        raise ConfigurationError(
+            "pipeline_timeout_seconds must be greater than or equal to poll_interval_seconds."
+        )
 
 
 def _validate_token_free_remote_url(remote_url: str, secrets: tuple[str, ...]) -> None:

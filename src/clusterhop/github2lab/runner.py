@@ -345,8 +345,11 @@ class GitHub2LabRunner:
                         else "Cancellation was requested."
                     )
             except Exception:
-                status = "error"
-                error_message = f"github2lab failed while {operation}."
+                status, error_message = _status_after_processing_failure(
+                    status,
+                    error_message,
+                    f"github2lab failed while {operation}.",
+                )
 
             status, error_message = self._apply_pending_cancellation(state, status, error_message)
             processed_log = process_job_log(
@@ -366,8 +369,11 @@ class GitHub2LabRunner:
             try:
                 summary = self._summary_renderer(summary_data)
             except Exception:
-                status = "error"
-                error_message = "Unable to generate the GitHub Actions summary."
+                status, error_message = _status_after_processing_failure(
+                    status,
+                    error_message,
+                    "Unable to generate the GitHub Actions summary.",
+                )
                 summary = _FALLBACK_SUMMARY
 
             status, error_message = self._apply_pending_cancellation(state, status, error_message)
@@ -383,15 +389,21 @@ class GitHub2LabRunner:
                 try:
                     summary = self._summary_renderer(summary_data)
                 except Exception:
-                    status = "error"
-                    error_message = "Unable to generate the GitHub Actions summary."
+                    status, error_message = _status_after_processing_failure(
+                        status,
+                        error_message,
+                        "Unable to generate the GitHub Actions summary.",
+                    )
                     summary = _FALLBACK_SUMMARY
 
             try:
                 self._summary_writer.write(summary)
             except Exception:
-                status = "error"
-                error_message = "Unable to write the GitHub Actions summary."
+                status, error_message = _status_after_processing_failure(
+                    status,
+                    error_message,
+                    "Unable to write the GitHub Actions summary.",
+                )
 
             status, error_message = self._apply_pending_cancellation(state, status, error_message)
             if status != summary_data.status:
@@ -412,8 +424,11 @@ class GitHub2LabRunner:
                 try:
                     summary = self._summary_renderer(summary_data)
                 except Exception:
-                    status = "error"
-                    error_message = "Unable to generate the GitHub Actions summary."
+                    status, error_message = _status_after_processing_failure(
+                        status,
+                        error_message,
+                        "Unable to generate the GitHub Actions summary.",
+                    )
                     summary = _FALLBACK_SUMMARY
 
         return GitHub2LabResult(
@@ -520,6 +535,18 @@ def select_log_job(jobs: tuple[GitLabJob, ...]) -> GitLabJob | None:
     """Return the only job when its log can be represented without prioritization."""
 
     return jobs[0] if len(jobs) == 1 else None
+
+
+def _status_after_processing_failure(
+    status: RunnerStatus,
+    current_error: str | None,
+    new_error: str,
+) -> tuple[RunnerStatus, str]:
+    """Preserve an authoritative timeout while recording a sanitized later failure."""
+
+    if status == "timeout":
+        return status, current_error or new_error
+    return "error", new_error
 
 
 def run_from_environment(
