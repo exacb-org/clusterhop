@@ -24,7 +24,7 @@ _COMMIT_SHA_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _GITLAB_TOKEN_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_TOKEN"
 _GITLAB_HOST_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_HOST"
 _GITLAB_ALTERNATE_HOST_ENVIRONMENT_VARIABLE = "CLUSTERHOP_GITLAB_GIT_ALTERNATE_HOST"
-_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE = "KEYLOOM_PASSWORD"
+_SECRETS_PASSWORD_ENVIRONMENT_VARIABLE = "CLUSTERHOP_SECRETS_PASSWORD"
 _UNSAFE_GIT_ENVIRONMENT_VARIABLES = frozenset(
     {
         "GIT_CONFIG_PARAMETERS",
@@ -119,7 +119,7 @@ class SubprocessGitCommandExecutor:
             if not _is_unsafe_inherited_git_environment_variable(name)
         }
         for secret_name in (
-            _KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE,
+            _SECRETS_PASSWORD_ENVIRONMENT_VARIABLE,
             "GITLAB_TOKEN",
             "GITLAB_TRIGGER_TOKEN",
             _GITLAB_TOKEN_ENVIRONMENT_VARIABLE,
@@ -127,7 +127,7 @@ class SubprocessGitCommandExecutor:
             process_environment.pop(secret_name, None)
         process_environment.update(environment)
         for secret_name in (
-            _KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE,
+            _SECRETS_PASSWORD_ENVIRONMENT_VARIABLE,
             "GITLAB_TOKEN",
             "GITLAB_TRIGGER_TOKEN",
         ):

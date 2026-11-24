@@ -5,9 +5,10 @@
 
 # clusterhop
 
-ClusterHop is CI/CD connector for HPC clusters between GitLab and HPC Clusters. It allows users to
-seamlessly submit jobs from GitLab CI/CD pipelines to HPC clusters, monitor their status, and
-retrieve results back to GitLab.
+ClusterHop connects GitHub Actions with GitLab CI/CD. It securely transfers the corresponding
+GitHub commit, triggers and monitors the configured GitLab pipeline, and reports the results back
+to GitHub Actions. GitLab pipelines can optionally execute HPC workloads through their configured
+runners.
 
 ## GitHub-to-GitLab Integration
 
@@ -26,18 +27,19 @@ steps:
     with:
       fetch-depth: 0
   - name: Run ClusterHop
-    uses: exacb-org/clusterhop@<full-commit-sha>
+    uses: exacb-org/clusterhop@main
     with:
       gitlab-url: https://gitlab.example.com
       gitlab-project: group/project
-      jsc-machine: jureca # Optional
+      preset-machine: jureca # Optional
       secrets-file: .github/clusterhop/secrets.keyloom.yaml
     env:
-      KEYLOOM_PASSWORD: ${{ secrets.KEYLOOM_PASSWORD }}
+      CLUSTERHOP_SECRETS_PASSWORD: ${{ secrets.CLUSTERHOP_SECRETS_PASSWORD }}
 ```
 
-The Action uses Keyloom-encrypted GitLab credentials and supports optional target-machine selection.
-Pin the Action to a full commit SHA until a reviewed release tag is available.
+The Action uses Keyloom-encrypted GitLab credentials and supports optional machine-preset selection.
+`@main` is a temporary development reference and will be replaced with the official new version tag
+when it is released. Pinning the Action to a full commit SHA remains available for maximum immutability.
 
 ## Documentation
 

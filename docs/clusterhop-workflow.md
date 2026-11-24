@@ -25,12 +25,12 @@ flowchart LR
 
 1. A developer pushes a commit to GitHub, and a GitHub Actions workflow starts.
 2. The workflow invokes the reusable ClusterHop Docker Action with the GitLab URL, GitLab project,
-   encrypted secrets file, and optional JSC machine name.
+   encrypted secrets file, and optional machine preset.
 3. The Action prepares the flat ClusterHop configuration and runtime options for the checked-out
    repository.
-4. The CLI uses `KEYLOOM_PASSWORD` to load the Keyloom-encrypted GitLab access and trigger tokens
-   in memory. The password and decrypted credentials are not written to generated configuration
-   files or pipeline state.
+4. The CLI uses `CLUSTERHOP_SECRETS_PASSWORD` to load the Keyloom-encrypted GitLab access and
+   trigger tokens in memory. The password and decrypted credentials are not written to generated
+   configuration files or pipeline state.
 5. ClusterHop validates the destination, resolves authoritative GitLab project information, checks
    the repository and commit, and validates all required credentials and options before the run.
 6. ClusterHop securely pushes the exact GitHub commit to `ci/<github-commit-sha>`. The push uses
@@ -39,9 +39,9 @@ flowchart LR
 7. ClusterHop explicitly calls the GitLab Pipeline Trigger API for that branch. This separates
    commit transfer from pipeline creation and allows GitHub metadata and configured trigger
    variables to be supplied deliberately.
-8. Optional `jsc_machine` configuration dynamically adds a variable such as
-   `CLUSTERHOP_JURECA_RUN=true`. Machine names are validated; ClusterHop does not maintain a
-   hardcoded machine list. Other custom trigger variables can be supplied separately.
+8. Optional `preset_machine` configuration dynamically adds a variable such as
+   `CLUSTERHOP_JURECA_RUN=true`. Preset names are validated; ClusterHop does not maintain a
+   hardcoded preset list. Other custom trigger variables can be supplied separately.
 9. A GitLab runner executes the jobs defined by the target project's `.gitlab-ci.yml`. A JURECA
    Jacamar Shell runner is one validated deployment example, not a requirement for every ClusterHop
    installation.
@@ -90,9 +90,9 @@ The legacy positional `clusterhop run SOURCE_FILE DESTINATION_NAME` behavior rem
 ### Reusable GitHub Action
 
 The Docker Action is the recommended GitHub Actions integration. Its inputs are `gitlab-url`,
-`gitlab-project`, optional `jsc-machine`, and `secrets-file`; `KEYLOOM_PASSWORD` is provided through
-the step environment from GitHub Actions Secrets. Pin the Action to an immutable released reference
-or commit according to the project's release policy.
+`gitlab-project`, optional `preset-machine`, and `secrets-file`; `CLUSTERHOP_SECRETS_PASSWORD` is
+provided through the step environment from GitHub Actions Secrets. Pin the Action to an immutable
+released reference or commit according to the project's release policy.
 
 ## Main Components
 

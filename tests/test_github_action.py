@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import yaml
-from keyloom import encrypt_value  # type: ignore[import-untyped]
+from keyloom import encrypt_value, load as keyloom_load  # type: ignore[import-untyped]
 
 from clusterhop.github2lab.models import GitLabPipeline
 from clusterhop.github2lab.state import FilePipelineStateStore, PipelineState
@@ -56,7 +56,7 @@ def _environment(tmp_path: Path) -> dict[str, str]:
         "GITHUB_ACTION": "clusterhop",
         "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
         "GITHUB_REPOSITORY": "example/source",
-        "KEYLOOM_PASSWORD": DUMMY_PASSWORD,
+        "CLUSTERHOP_SECRETS_PASSWORD": DUMMY_PASSWORD,
     }
 
 
@@ -84,7 +84,7 @@ def _prepare(
     return prepare_action_run(
         gitlab_url="https://gitlab.example.test",
         gitlab_project="group/nested/project",
-        jsc_machine=machine,
+        preset_machine=machine,
         secrets_file=secrets,
         environ=environ,
     )
@@ -102,10 +102,8 @@ def test_action_metadata_declares_approved_contract() -> None:
             "description": "GitLab project path_with_namespace.",
             "required": True,
         },
-        "jsc-machine": {
-            "description": (
-                "Optional JSC machine name used to generate the ClusterHop pipeline variable."
-            ),
+        "preset-machine": {
+            "description": "Optional machine preset used to generate the ClusterHop pipeline variable.",
             "required": False,
             "default": "",
         },
@@ -133,7 +131,7 @@ def test_prepare_action_run_writes_non_secret_inputs_and_cli_command(tmp_path: P
         "destination_type": "gitlab",
         "gitlab_project_path": "group/nested/project",
         "gitlab_url": "https://gitlab.example.test",
-        "jsc_machine": "jureca",
+        "preset_machine": "jureca",
     }
     assert options == {"pipeline_state_file": str(paths.pipeline_state)}
     assert command == (
@@ -162,7 +160,7 @@ def test_omitted_machine_writes_no_machine_selection(tmp_path: Path) -> None:
     _prepare(environ, machine="")
 
     config = json.loads(action_paths(environ).config.read_text(encoding="utf-8"))
-    assert "jsc_machine" not in config
+    assert "preset_machine" not in config
 
 
 @pytest.mark.parametrize("machine", ["jupiter", "JURECA", "future_machine_2"])
@@ -172,7 +170,7 @@ def test_arbitrary_valid_machine_is_preserved(tmp_path: Path, machine: str) -> N
     _prepare(environ, machine=machine)
 
     config = json.loads(action_paths(environ).config.read_text(encoding="utf-8"))
-    assert config["jsc_machine"] == machine
+    assert config["preset_machine"] == machine
 
 
 @pytest.mark.parametrize("machine", ["invalid-machine", "2jureca", "machine name", " jureca"])
@@ -180,11 +178,11 @@ def test_invalid_machine_is_rejected_before_cli_execution(tmp_path: Path, machin
     environ = _environment(tmp_path)
     _write_secrets(environ, "vault.yaml")
 
-    with pytest.raises(GitHubActionError, match="jsc_machine"):
+    with pytest.raises(GitHubActionError, match="preset_machine"):
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine=machine,
+            preset_machine=machine,
             secrets_file="vault.yaml",
             environ=environ,
         )
@@ -209,7 +207,7 @@ def test_invalid_required_inputs_are_clear(
     values = {
         "gitlab_url": "https://gitlab.example.test",
         "gitlab_project": "group/project",
-        "jsc_machine": "",
+        "preset_machine": "",
         "secrets_file": "vault.yaml",
     }
     values.update(overrides)
@@ -226,7 +224,7 @@ def test_secrets_file_must_stay_inside_repository(tmp_path: Path, secrets_file: 
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=secrets_file,
             environ=environ,
         )
@@ -242,7 +240,7 @@ def test_nonexistent_relative_secrets_file_is_rejected(tmp_path: Path) -> None:
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=".github/clusterhop/missing-secrets.yaml",
             environ=environ,
         )
@@ -266,7 +264,7 @@ def test_malformed_keyloom_yaml_is_rejected_with_sanitized_error(tmp_path: Path)
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=path.name,
             environ=environ,
         )
@@ -289,7 +287,7 @@ def test_missing_required_encrypted_credential_is_rejected(tmp_path: Path) -> No
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=path.name,
             environ=environ,
         )
@@ -309,7 +307,7 @@ def test_action_rejects_plaintext_secrets_without_changing_cli_compatibility(
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file="plain-secrets.yaml",
             environ=environ,
         )
@@ -344,7 +342,7 @@ def test_action_rejects_plaintext_or_partially_encrypted_tokens(
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=path.name,
             environ=environ,
         )
@@ -382,7 +380,7 @@ def test_action_rejects_placeholder_or_malformed_keyloom_wrappers(
         prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=path.name,
             environ=environ,
         )
@@ -405,7 +403,7 @@ def test_action_structural_preflight_does_not_decrypt_ciphertext(tmp_path: Path)
         command = prepare_action_run(
             gitlab_url="https://gitlab.example.test",
             gitlab_project="group/project",
-            jsc_machine="",
+            preset_machine="",
             secrets_file=path.name,
             environ=environ,
         )
@@ -419,6 +417,8 @@ def test_main_execs_cli_so_result_exit_code_and_signals_are_preserved(tmp_path: 
     _write_secrets(environ, "vault.yaml")
 
     with patch.dict(os.environ, environ, clear=True), patch("os.execvp") as execute:
+        assert os.environ["CLUSTERHOP_SECRETS_PASSWORD"] == DUMMY_PASSWORD
+        assert "KEYLOOM_PASSWORD" not in os.environ
         with pytest.raises(AssertionError, match="returned unexpectedly"):
             main(
                 (
@@ -483,13 +483,7 @@ def test_post_cleanup_uses_existing_fallback_and_is_idempotent(tmp_path: Path) -
         patch(
             "clusterhop.api.resolve_gitlab_project", return_value=resolved_project
         ) as resolve_project,
-        patch(
-            "clusterhop.github_action._load_secrets_mapping",
-            return_value={
-                "gitlab_token": DUMMY_TOKEN,
-                "gitlab_trigger_token": DUMMY_TRIGGER_TOKEN,
-            },
-        ) as load_secrets,
+        patch("clusterhop.cli.keyloom_load", wraps=keyloom_load) as decrypt,
         patch("clusterhop.github_action.cancel_pipeline_from_state_environment", fallback),
     ):
         first = cleanup_action_run(environ)
@@ -504,7 +498,10 @@ def test_post_cleanup_uses_existing_fallback_and_is_idempotent(tmp_path: Path) -
     assert cleanup_environment["GITLAB_PROJECT_ID"] == "8894"
     assert cleanup_environment["GITLAB_REMOTE_URL"].endswith("group/nested/project.git")
     assert resolve_project.call_args.kwargs["request_timeout_seconds"] == 10.0
-    load_secrets.assert_called_once()
+    decrypt.assert_called_once_with(
+        path=(Path(environ["GITHUB_WORKSPACE"]) / "vault.yaml").resolve(),
+        password=DUMMY_PASSWORD,
+    )
     assert not action_paths(environ).directory.exists()
 
 
@@ -542,7 +539,11 @@ def test_post_cleanup_keyloom_failure_is_secret_safe(
     _write_active_state(environ)
 
     with (
-        patch.dict(os.environ, {**environ, "KEYLOOM_PASSWORD": "wrong-password"}, clear=True),
+        patch.dict(
+            os.environ,
+            {**environ, "CLUSTERHOP_SECRETS_PASSWORD": "wrong-password"},
+            clear=True,
+        ),
         patch(
             "clusterhop.github_action._load_secrets_mapping",
             side_effect=Exception(f"unsafe {DUMMY_TOKEN} {DUMMY_PASSWORD}"),

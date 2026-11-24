@@ -3,13 +3,13 @@
 # Copyright (C) 2026 Jayesh Badwaik <j.badwaik@fz-juelich.de>
 # --------------------------------------------------------------------------------------------------
 
-"""Tests for dynamic JSC machine trigger-variable generation."""
+"""Tests for dynamic machine-preset trigger-variable generation."""
 
 from __future__ import annotations
 
 import pytest
 
-from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
+from clusterhop.github2lab.machine import MachineNameError, preset_machine_pipeline_variable
 
 
 @pytest.mark.parametrize(
@@ -25,12 +25,12 @@ from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline
         ("a" * 64, f"CLUSTERHOP_{'A' * 64}_RUN"),
     ],
 )
-def test_jsc_machine_pipeline_variable_is_dynamic_and_deterministic(
+def test_preset_machine_pipeline_variable_is_dynamic_and_deterministic(
     machine_name: str,
     expected_name: str,
 ) -> None:
-    assert jsc_machine_pipeline_variable(machine_name) == (expected_name, "true")
-    assert jsc_machine_pipeline_variable(machine_name) == (expected_name, "true")
+    assert preset_machine_pipeline_variable(machine_name) == (expected_name, "true")
+    assert preset_machine_pipeline_variable(machine_name) == (expected_name, "true")
 
 
 @pytest.mark.parametrize(
@@ -52,6 +52,6 @@ def test_jsc_machine_pipeline_variable_is_dynamic_and_deterministic(
         None,
     ],
 )
-def test_jsc_machine_pipeline_variable_rejects_invalid_values(machine_name: object) -> None:
-    with pytest.raises(MachineNameError, match="jsc_machine"):
-        jsc_machine_pipeline_variable(machine_name)
+def test_preset_machine_pipeline_variable_rejects_invalid_values(machine_name: object) -> None:
+    with pytest.raises(MachineNameError, match="preset_machine"):
+        preset_machine_pipeline_variable(machine_name)

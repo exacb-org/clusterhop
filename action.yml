@@ -1,5 +1,5 @@
 name: ClusterHop
-description: Run a GitHub commit through a GitLab CI/CD pipeline with ClusterHop.
+description: Trigger and monitor a GitLab CI/CD pipeline for a GitHub commit with Clusterhop.
 author: exacb-org
 
 inputs:
@@ -9,8 +9,8 @@ inputs:
   gitlab-project:
     description: GitLab project path_with_namespace.
     required: true
-  jsc-machine:
-    description: Optional JSC machine name used to generate the ClusterHop pipeline variable.
+  preset-machine:
+    description: Optional machine preset used to generate the ClusterHop pipeline variable.
     required: false
     default: ""
   secrets-file:
@@ -25,7 +25,7 @@ runs:
   args:
     - ${{ inputs.gitlab-url }}
     - ${{ inputs.gitlab-project }}
-    - ${{ inputs.jsc-machine }}
+    - ${{ inputs.preset-machine }}
     - ${{ inputs.secrets-file }}
 
 branding:

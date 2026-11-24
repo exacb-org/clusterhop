@@ -29,7 +29,7 @@ from clusterhop.github2lab.fallback import (
     cancel_pipeline_from_state_environment,
 )
 from clusterhop.github2lab.config import DEFAULT_CLEANUP_TIMEOUT_SECONDS
-from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
+from clusterhop.github2lab.machine import MachineNameError, preset_machine_pipeline_variable
 from clusterhop.github2lab.state import FilePipelineStateStore, PipelineStateError
 from clusterhop.github2lab.urls import GitLabUrlError, validate_gitlab_base_url
 
@@ -60,7 +60,7 @@ def prepare_action_run(
     *,
     gitlab_url: str,
     gitlab_project: str,
-    jsc_machine: str,
+    preset_machine: str,
     secrets_file: str,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
@@ -71,10 +71,10 @@ def prepare_action_run(
     paths = action_paths(source)
     normalized_gitlab_url = _validate_gitlab_url(gitlab_url)
     normalized_project = _validate_gitlab_project(gitlab_project)
-    normalized_machine = jsc_machine
+    normalized_machine = preset_machine
     if normalized_machine:
         try:
-            jsc_machine_pipeline_variable(normalized_machine)
+            preset_machine_pipeline_variable(normalized_machine)
         except MachineNameError as error:
             raise GitHubActionError(str(error)) from None
 
@@ -97,7 +97,7 @@ def prepare_action_run(
         "gitlab_project_path": normalized_project,
     }
     if normalized_machine:
-        config["jsc_machine"] = normalized_machine
+        config["preset_machine"] = normalized_machine
     options = {"pipeline_state_file": str(paths.pipeline_state)}
     metadata = {
         "schema_version": _ACTION_SCHEMA_VERSION,
@@ -209,7 +209,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             command = prepare_action_run(
                 gitlab_url=argv[1],
                 gitlab_project=argv[2],
-                jsc_machine=argv[3],
+                preset_machine=argv[3],
                 secrets_file=argv[4],
             )
             try:

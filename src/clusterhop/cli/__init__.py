@@ -20,7 +20,7 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from clusterhop import RunConfigurationError, run as clusterhop_run
 
 _NEW_RUN_OPTIONS = ("--config", "--options", "--secrets")
-_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE = "KEYLOOM_PASSWORD"
+_SECRETS_PASSWORD_ENVIRONMENT_VARIABLE = "CLUSTERHOP_SECRETS_PASSWORD"
 _KEYLOOM_MARKER = "__keyloom__"
 _SEANVAULT_MARKER = "__seanvault__"
 
@@ -119,10 +119,10 @@ def _load_secrets_mapping(
         return loaded
 
     source = os.environ if environ is None else environ
-    password = source.get(_KEYLOOM_PASSWORD_ENVIRONMENT_VARIABLE)
+    password = source.get(_SECRETS_PASSWORD_ENVIRONMENT_VARIABLE)
     if not password:
         raise CliInputError(
-            "The KEYLOOM_PASSWORD environment variable is required for a "
+            "The CLUSTERHOP_SECRETS_PASSWORD environment variable is required for a "
             "Keyloom-marked secrets file."
         )
 

@@ -37,7 +37,7 @@ def _write_yaml_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "github_repository: example/source-project\n"
         "github_commit_sha: 0123456789abcdef0123456789abcdef01234567\n"
         'github_run_id: "987654"\n'
-        "jsc_machine: jupiter\n"
+        "preset_machine: jupiter\n"
         "extra_pipeline_variables:\n"
         "  CUSTOM_MODE: validation\n"
         '  EMPTY_VALUE: ""\n',
@@ -131,7 +131,7 @@ def test_new_run_command_loads_yaml_and_calls_public_api(tmp_path: Path) -> None
             "github_repository": "example/source-project",
             "github_commit_sha": "0123456789abcdef0123456789abcdef01234567",
             "github_run_id": "987654",
-            "jsc_machine": "jupiter",
+            "preset_machine": "jupiter",
             "extra_pipeline_variables": {
                 "CUSTOM_MODE": "validation",
                 "EMPTY_VALUE": "",
@@ -186,7 +186,7 @@ def test_new_run_command_reports_invalid_machine_safely(
     config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
     config_text = config_path.read_text(encoding="utf-8")
     config_path.write_text(
-        config_text.replace("jsc_machine: jupiter", "jsc_machine: invalid-machine"),
+        config_text.replace("preset_machine: jupiter", "preset_machine: invalid-machine"),
         encoding="utf-8",
     )
     arguments = [
@@ -204,7 +204,7 @@ def test_new_run_command_reports_invalid_machine_safely(
             main()
 
     captured = capsys.readouterr()
-    assert "jsc_machine" in captured.err
+    assert "preset_machine" in captured.err
     assert DUMMY_TOKEN not in captured.out
     assert DUMMY_TOKEN not in captured.err
 
@@ -274,7 +274,7 @@ def test_keyloom_secrets_are_decrypted_and_passed_to_public_api(
     ]
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
         patch("clusterhop.cli.clusterhop_run", backend),
         patch("clusterhop.cli.keyloom_load", wraps=keyloom_load) as decrypt,
@@ -298,7 +298,7 @@ def test_keyloom_secrets_are_decrypted_and_passed_to_public_api(
         assert sensitive_value not in captured.err
 
 
-@pytest.mark.parametrize("environment", [{}, {"KEYLOOM_PASSWORD": ""}])
+@pytest.mark.parametrize("environment", [{}, {"CLUSTERHOP_SECRETS_PASSWORD": ""}])
 def test_keyloom_secrets_require_non_empty_environment_password(
     tmp_path: Path,
     keyloom_envelopes: dict[str, str],
@@ -322,9 +322,42 @@ def test_keyloom_secrets_require_non_empty_environment_password(
             main()
 
     captured = capsys.readouterr()
-    assert "KEYLOOM_PASSWORD" in captured.err
+    assert "CLUSTERHOP_SECRETS_PASSWORD" in captured.err
     assert DUMMY_TOKEN not in captured.err
     assert DUMMY_TOKEN not in captured.out
+
+
+def test_legacy_keyloom_password_name_does_not_unlock_encrypted_secrets(
+    tmp_path: Path,
+    keyloom_envelopes: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, _, secrets_path = _write_yaml_inputs(tmp_path)
+    _write_keyloom_secrets(secrets_path, keyloom_envelopes)
+    backend = Mock()
+    arguments = [
+        "clusterhop",
+        "run",
+        "--config",
+        str(config_path),
+        str(tmp_path),
+        "--secrets",
+        str(secrets_path),
+    ]
+
+    with (
+        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.object(sys, "argv", arguments),
+        patch("clusterhop.cli.clusterhop_run", backend),
+    ):
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    captured = capsys.readouterr()
+    assert "CLUSTERHOP_SECRETS_PASSWORD" in captured.err
+    assert DUMMY_VAULT_PASSWORD not in captured.out
+    assert DUMMY_VAULT_PASSWORD not in captured.err
+    backend.assert_not_called()
 
 
 def test_keyloom_wrong_password_is_secret_safe(
@@ -346,7 +379,7 @@ def test_keyloom_wrong_password_is_secret_safe(
 
     backend = Mock()
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": "wrong-password"}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": "wrong-password"}, clear=True),
         patch.object(sys, "argv", arguments),
         patch("clusterhop.cli.clusterhop_run", backend),
     ):
@@ -385,7 +418,7 @@ def test_modified_keyloom_ciphertext_fails_safely(
 
     backend = Mock()
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
         patch("clusterhop.cli.clusterhop_run", backend),
     ):
@@ -429,7 +462,7 @@ def test_keyloom_decrypted_non_string_token_fails_before_runner(
     ]
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
         patch("clusterhop.api.run_from_environment") as runner,
     ):
@@ -474,7 +507,7 @@ def test_invalid_keyloom_secrets_fail_safely(
     ]
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
     ):
         with pytest.raises(SystemExit, match="2"):
@@ -506,7 +539,7 @@ def test_keyloom_error_details_are_not_forwarded(
     ]
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
         patch(
             "clusterhop.cli.keyloom_load",
@@ -618,7 +651,7 @@ def test_keyloom_decrypted_root_must_be_a_mapping(
     ]
 
     with (
-        patch.dict("os.environ", {"KEYLOOM_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
+        patch.dict("os.environ", {"CLUSTERHOP_SECRETS_PASSWORD": DUMMY_VAULT_PASSWORD}, clear=True),
         patch.object(sys, "argv", arguments),
     ):
         with pytest.raises(SystemExit, match="2"):

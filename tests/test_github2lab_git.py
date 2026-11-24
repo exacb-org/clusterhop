@@ -172,7 +172,7 @@ def test_subprocess_executor_removes_inherited_secrets_from_git_environment() ->
         patch.dict(
             "os.environ",
             {
-                "KEYLOOM_PASSWORD": "vault-password",
+                "CLUSTERHOP_SECRETS_PASSWORD": "vault-password",
                 "GITLAB_TOKEN": DUMMY_GITLAB_TOKEN,
                 "GITLAB_TRIGGER_TOKEN": DUMMY_TRIGGER_TOKEN,
                 "CLUSTERHOP_GITLAB_GIT_TOKEN": "stale-token",
@@ -192,7 +192,7 @@ def test_subprocess_executor_removes_inherited_secrets_from_git_environment() ->
         executor.run(("git", "status"), cwd=Path("/workspace"), environment={})
 
     process_environment = run.call_args.kwargs["env"]
-    assert "KEYLOOM_PASSWORD" not in process_environment
+    assert "CLUSTERHOP_SECRETS_PASSWORD" not in process_environment
     assert "GITLAB_TOKEN" not in process_environment
     assert "GITLAB_TRIGGER_TOKEN" not in process_environment
     assert "CLUSTERHOP_GITLAB_GIT_TOKEN" not in process_environment

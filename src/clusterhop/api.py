@@ -20,7 +20,7 @@ from clusterhop.github2lab.config import (
     validate_extra_pipeline_variables,
     validate_environment_before_project_resolution,
 )
-from clusterhop.github2lab.machine import MachineNameError, jsc_machine_pipeline_variable
+from clusterhop.github2lab.machine import MachineNameError, preset_machine_pipeline_variable
 from clusterhop.github2lab.project import (
     GitLabProjectResolutionError,
     resolve_gitlab_project,
@@ -216,7 +216,7 @@ def _copy_config_fields(source: InputObject, environment: dict[str, str]) -> Non
         environment[environment_name] = value
 
     pipeline_variables_input = _input_value(source, "extra_pipeline_variables")
-    machine_input = _input_value(source, "jsc_machine")
+    machine_input = _input_value(source, "preset_machine")
     if pipeline_variables_input is _MISSING and machine_input is _MISSING:
         return
 
@@ -230,12 +230,12 @@ def _copy_config_fields(source: InputObject, environment: dict[str, str]) -> Non
 
     if machine_input is not _MISSING:
         try:
-            variable_name, variable_value = jsc_machine_pipeline_variable(machine_input)
+            variable_name, variable_value = preset_machine_pipeline_variable(machine_input)
         except MachineNameError as error:
             raise RunConfigurationError(str(error)) from None
         if variable_name in validated_variables:
             raise RunConfigurationError(
-                "Run configuration field jsc_machine conflicts with extra_pipeline_variables."
+                "Run configuration field preset_machine conflicts with extra_pipeline_variables."
             )
         validated_variables[variable_name] = variable_value
 
