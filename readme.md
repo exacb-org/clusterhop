@@ -27,7 +27,7 @@ steps:
     with:
       fetch-depth: 0
   - name: Run ClusterHop
-    uses: exacb-org/clusterhop@main
+    uses: exacb-org/clusterhop@v0.3.0
     with:
       gitlab-url: https://gitlab.example.com
       gitlab-project: group/project
@@ -38,8 +38,7 @@ steps:
 ```
 
 The Action uses Keyloom-encrypted GitLab credentials and supports optional machine-preset selection.
-`@main` is a temporary development reference and will be replaced with the official new version tag
-when it is released. Pinning the Action to a full commit SHA remains available for maximum immutability.
+Pinning the Action to a full commit SHA remains available for maximum immutability.
 
 ## Documentation
 
